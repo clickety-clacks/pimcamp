@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import selectors
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -15,6 +17,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE = ROOT / "pimcamp"
 PORT_ADAPTER = ROOT / "tests" / "support" / "operations_adapter.py"
+OBSERVATION_ADAPTER = ROOT / "tests" / "support" / "observation_adapter.py"
 ALL_GRANTS = ["list", "read", "compose", "reply", "send", "junk", "subscribe_new_mail"]
 
 
@@ -27,6 +30,7 @@ class BoundaryCase(unittest.TestCase):
         self.adapter_state = self.root / "adapter.json"
         self.calls = self.root / "calls.jsonl"
         self.calls.write_text("")
+        self.observation_event = self.root / "observation-event"
         self.credential = "pimcamp-test-client-secret"
         self.write_adapter_state([message("lower-id-1", "Original body")])
         self.write_config(ALL_GRANTS)
@@ -46,7 +50,12 @@ class BoundaryCase(unittest.TestCase):
             },
             "observation_adapter": {
                 "kind": "command",
-                "command": [sys.executable, str(PORT_ADAPTER), str(self.adapter_state), str(self.calls)],
+                "command": [
+                    sys.executable,
+                    str(OBSERVATION_ADAPTER),
+                    str(self.adapter_state),
+                    str(self.calls),
+                ],
             },
         }
         self.config_path = self.root / "config.json"
@@ -54,7 +63,15 @@ class BoundaryCase(unittest.TestCase):
         os.chmod(self.config_path, 0o600)
 
     def write_adapter_state(self, messages: list[dict[str, object]]) -> None:
-        self.adapter_state.write_text(json.dumps({"messages": messages}))
+        self.adapter_state.write_text(
+            json.dumps(
+                {
+                    "messages": messages,
+                    "observation_event_file": str(self.observation_event),
+                    "private_sentinel": "PRIVATE-OBSERVATION-SENTINEL",
+                }
+            )
+        )
 
     def update_adapter_state(self, **values: object) -> None:
         state = json.loads(self.adapter_state.read_text())
@@ -119,6 +136,17 @@ class BoundaryCase(unittest.TestCase):
             if time.monotonic() >= deadline:
                 self.fail(f"adapter never recorded {count} {operation} calls")
             time.sleep(0.005)
+
+    def read_process_line(
+        self, process: subprocess.Popen[str], timeout: float = 3
+    ) -> str:
+        assert process.stdout is not None
+        with selectors.DefaultSelector() as ready:
+            ready.register(process.stdout, selectors.EVENT_READ)
+            self.assertTrue(ready.select(timeout), "process did not emit a line")
+        line = process.stdout.readline()
+        self.assertTrue(line, "process closed stdout before emitting a line")
+        return line
 
     def value(self, result: subprocess.CompletedProcess[str]) -> dict[str, object]:
         self.assertEqual(1, len(result.stdout.splitlines()), result.stdout)
@@ -404,6 +432,67 @@ class BoundaryCase(unittest.TestCase):
         self.assertEqual(1, len(self.value(proved)["result"]["messages"]))
         diagnostics = [json.loads(line) for line in proved.stderr.splitlines()]
         self.assertTrue(any(item.get("forced_termination") for item in diagnostics))
+
+    def test_subscription_normalizes_signal_before_authoritative_query(self) -> None:
+        subscription = self.start("subscribe_new_mail", {})
+        ready = json.loads(self.read_process_line(subscription))
+        self.assertEqual({"status": "subscribed"}, ready["result"])
+        self.assertEqual(1, len(self.calls_for("observation_open")))
+        self.assertEqual(0, len(self.calls_for("list")))
+
+        self.observation_event.touch()
+        event = json.loads(self.read_process_line(subscription))
+        self.assertEqual(
+            {"contract_version", "kind", "mailbox", "observed_at"}, set(event)
+        )
+        self.assertEqual("pimcamp.v1", event["contract_version"])
+        self.assertEqual("new_mail", event["kind"])
+        self.assertEqual("inbox", event["mailbox"])
+        self.assertTrue(event["observed_at"].endswith("Z"))
+        self.assertNotIn("PRIVATE-OBSERVATION-SENTINEL", json.dumps(event))
+        self.assertEqual(0, len(self.calls_for("list")))
+
+        listed = self.invoke("list", {"limit": 1})
+        self.assertEqual(0, listed.returncode, listed.stderr)
+        self.assertEqual(1, len(self.calls_for("list")))
+        subscription.send_signal(signal.SIGTERM)
+        remainder, diagnostics = subscription.communicate(timeout=5)
+        self.assertEqual(0, subscription.returncode, diagnostics)
+        self.assertEqual("", remainder)
+        self.assertEqual(1, len(self.calls_for("observation_close")))
+
+    def test_subscription_failure_is_normalized_without_private_content(self) -> None:
+        self.update_adapter_state(observation_behavior="malformed_event")
+        subscription = self.start("subscribe_new_mail", {})
+        self.read_process_line(subscription)
+        self.observation_event.touch()
+        failure = json.loads(self.read_process_line(subscription))
+        stdout, diagnostics = subscription.communicate(timeout=5)
+        self.assertEqual(1, subscription.returncode)
+        self.assertEqual("backend_unavailable", failure["code"])
+        evidence = json.dumps(failure) + stdout + diagnostics
+        self.assertNotIn("PRIVATE-OBSERVATION-SENTINEL", evidence)
+        self.assertEqual(1, len(self.calls_for("observation_close")))
+
+    def test_subscription_open_and_close_are_bounded(self) -> None:
+        self.write_config(ALL_GRANTS, wait_seconds=0.15)
+        self.update_adapter_state(observation_behavior="open_hang")
+        timed_out = self.invoke("subscribe_new_mail", {})
+        self.assertEqual(1, timed_out.returncode)
+        self.assertEqual("backend_unavailable", self.value(timed_out)["code"])
+        diagnostics = [json.loads(line) for line in timed_out.stderr.splitlines()]
+        self.assertTrue(any(item.get("forced_termination") for item in diagnostics))
+
+        self.update_adapter_state(observation_behavior="close_hang")
+        subscription = self.start("subscribe_new_mail", {})
+        self.read_process_line(subscription)
+        subscription.send_signal(signal.SIGTERM)
+        stdout, stderr = subscription.communicate(timeout=5)
+        self.assertEqual(0, subscription.returncode, stderr)
+        self.assertEqual("", stdout)
+        diagnostics = [json.loads(line) for line in stderr.splitlines()]
+        self.assertTrue(any(item.get("forced_termination") for item in diagnostics))
+        self.assertEqual(1, len(self.calls_for("observation_close")))
 
 
 def composition_input() -> dict[str, object]:
