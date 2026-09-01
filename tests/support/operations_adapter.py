@@ -6,8 +6,10 @@ directly, so it contains no invented lower-adapter syntax.
 """
 
 import json
+import os
 from pathlib import Path
 import sys
+import time
 
 
 def main() -> int:
@@ -18,10 +20,17 @@ def main() -> int:
     operation = sys.argv[3]
     request = json.loads(sys.stdin.read())
     state = json.loads(state_path.read_text())
+    call = {"operation": operation}
+    if operation == "send":
+        call["threading_present"] = request.get("threading") is not None
     with calls_path.open("a", encoding="utf-8") as calls:
-        calls.write(json.dumps({"operation": operation}, separators=(",", ":")) + "\n")
+        calls.write(json.dumps(call, separators=(",", ":")) + "\n")
+
+    behavior = state.get("behavior", {})
 
     if operation == "list":
+        if behavior.get("list") == "hang":
+            hang()
         cursor = request.get("cursor")
         try:
             offset = 0 if cursor is None else int(cursor.removeprefix("page:"))
@@ -41,7 +50,11 @@ def main() -> int:
         ]
         next_offset = offset + len(messages)
         next_cursor = f"page:{next_offset}" if next_offset < len(state["messages"]) else None
-        return output({"ok": {"messages": summaries, "next_cursor": next_cursor}})
+        value = {"ok": {"messages": summaries, "next_cursor": next_cursor}}
+        if behavior.get("list") == "cleanup_hang":
+            output(value)
+            hang()
+        return output(value)
     if operation == "read":
         for message in state["messages"]:
             if message["adapter_id"] == request["adapter_id"]:
@@ -60,12 +73,46 @@ def main() -> int:
                     }
                 )
         return output({"error": {"code": "not_found"}})
+    if operation == "send":
+        selected = behavior.get("send", "success")
+        if selected == "success":
+            return output({"ok": {"status": "sent"}})
+        if selected == "lost_response":
+            return 0
+        if selected == "hang":
+            hang()
+        if selected in {"pause_success", "crash_pause"}:
+            pause_file = Path(state["pause_file"])
+            while not pause_file.exists():
+                if selected == "crash_pause" and os.getppid() == 1:
+                    return 0
+                time.sleep(0.005)
+            return output({"ok": {"status": "sent"}})
+    if operation == "junk_capabilities":
+        capabilities = state.get(
+            "junk_capabilities", {"report_spam": False, "move_to_junk": False}
+        )
+        return output({"ok": capabilities})
+    if operation in {"report_spam", "move_to_junk"}:
+        if behavior.get(operation) == "lost_response":
+            return 0
+        adapter_id = request["adapter_id"]
+        state["messages"] = [
+            message for message in state["messages"] if message["adapter_id"] != adapter_id
+        ]
+        state_path.write_text(json.dumps(state))
+        return output({"ok": {"filed": True}})
     return output({"error": {"code": "unsupported"}})
 
 
 def output(value: object) -> int:
-    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
     return 0
+
+
+def hang() -> None:
+    while True:
+        time.sleep(1)
 
 
 if __name__ == "__main__":

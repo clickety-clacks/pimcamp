@@ -4,9 +4,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -29,14 +31,14 @@ class BoundaryCase(unittest.TestCase):
         self.write_adapter_state([message("lower-id-1", "Original body")])
         self.write_config(ALL_GRANTS)
 
-    def write_config(self, grants: list[str]) -> None:
+    def write_config(self, grants: list[str], wait_seconds: float = 2) -> None:
         digest = hashlib.sha256(self.credential.encode()).hexdigest()
         self.state_path = self.root / "state" / "pimcamp.sqlite3"
         config = {
             "credentials": {
                 digest: {"client_identity": "boundary-test", "grants": grants}
             },
-            "adapter_wait_seconds": 2,
+            "adapter_wait_seconds": wait_seconds,
             "state_path": str(self.state_path),
             "operations_adapter": {
                 "kind": "command",
@@ -53,6 +55,18 @@ class BoundaryCase(unittest.TestCase):
 
     def write_adapter_state(self, messages: list[dict[str, object]]) -> None:
         self.adapter_state.write_text(json.dumps({"messages": messages}))
+
+    def update_adapter_state(self, **values: object) -> None:
+        state = json.loads(self.adapter_state.read_text())
+        state.update(values)
+        self.adapter_state.write_text(json.dumps(state))
+
+    def calls_for(self, operation: str) -> list[dict[str, object]]:
+        return [
+            value
+            for line in self.calls.read_text().splitlines()
+            if (value := json.loads(line))["operation"] == operation
+        ]
 
     def invoke(self, operation: str, input_value: object, credential: str | None = None) -> subprocess.CompletedProcess[str]:
         envelope = {"contract_version": "pimcamp.v1", "input": input_value}
@@ -76,6 +90,35 @@ class BoundaryCase(unittest.TestCase):
             check=False,
             timeout=5,
         )
+
+    def start(self, operation: str, input_value: object) -> subprocess.Popen[str]:
+        environment = os.environ.copy()
+        environment["PIMCAMP_CONFIG"] = str(self.config_path)
+        envelope = {
+            "contract_version": "pimcamp.v1",
+            "client_credential": self.credential,
+            "input": input_value,
+        }
+        process = subprocess.Popen(
+            [str(EXECUTABLE), operation],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+        )
+        assert process.stdin is not None
+        process.stdin.write(json.dumps(envelope))
+        process.stdin.close()
+        process.stdin = None
+        return process
+
+    def wait_for_calls(self, operation: str, count: int) -> None:
+        deadline = time.monotonic() + 3
+        while len(self.calls_for(operation)) < count:
+            if time.monotonic() >= deadline:
+                self.fail(f"adapter never recorded {count} {operation} calls")
+            time.sleep(0.005)
 
     def value(self, result: subprocess.CompletedProcess[str]) -> dict[str, object]:
         self.assertEqual(1, len(result.stdout.splitlines()), result.stdout)
@@ -200,6 +243,168 @@ class BoundaryCase(unittest.TestCase):
         again = self.invoke("reply", {"message_ref": message_ref, "body_text": "Again"})
         self.assertEqual("re: Status", self.value(again)["result"]["subject"])
 
+    def test_send_replays_one_result_and_rejects_a_changed_request(self) -> None:
+        input_value = send_input()
+        first = self.invoke("send", input_value)
+        second = self.invoke("send", input_value)
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual(self.value(first), self.value(second))
+        self.assertEqual(1, len(self.calls_for("send")))
+
+        changed = send_input()
+        changed["composition"]["body_text"] = "Changed"
+        conflict = self.invoke("send", changed)
+        self.assertEqual("conflict", self.value(conflict)["code"])
+        self.assertEqual(1, len(self.calls_for("send")))
+
+    def test_concurrent_send_has_one_claim_and_canonical_request_equality(self) -> None:
+        pause_file = self.root / "release-send"
+        self.update_adapter_state(
+            behavior={"send": "pause_success"}, pause_file=str(pause_file)
+        )
+        first_input = send_input()
+        second_input = {
+            "mutation_id": first_input["mutation_id"],
+            "composition": dict(reversed(list(first_input["composition"].items()))),
+        }
+        first = self.start("send", first_input)
+        self.wait_for_calls("send", 1)
+        second = self.start("send", second_input)
+        pause_file.touch()
+        first_stdout, first_stderr = first.communicate(timeout=5)
+        second_stdout, second_stderr = second.communicate(timeout=5)
+        self.assertEqual(0, first.returncode, first_stderr)
+        self.assertEqual(0, second.returncode, second_stderr)
+        self.assertEqual(json.loads(first_stdout), json.loads(second_stdout))
+        self.assertEqual(1, len(self.calls_for("send")))
+
+    def test_reply_send_preserves_threading_and_lost_response_is_immutable(self) -> None:
+        listed = self.value(self.invoke("list", {"limit": 1}))["result"]
+        message_ref = listed["messages"][0]["message_ref"]
+        reply = self.value(
+            self.invoke("reply", {"message_ref": message_ref, "body_text": "Reply"})
+        )["result"]
+        self.update_adapter_state(behavior={"send": "lost_response"})
+        input_value = {
+            "composition": reply,
+            "mutation_id": "550e8400-e29b-41d4-a716-446655440010",
+        }
+        first = self.invoke("send", input_value)
+        second = self.invoke("send", input_value)
+        self.assertEqual("outcome_unknown", self.value(first)["code"])
+        self.assertEqual(self.value(first), self.value(second))
+        calls = self.calls_for("send")
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0]["threading_present"])
+
+    def test_forced_claimant_death_never_submits_twice(self) -> None:
+        pause_file = self.root / "never-release"
+        self.update_adapter_state(
+            behavior={"send": "crash_pause"}, pause_file=str(pause_file)
+        )
+        input_value = send_input("550e8400-e29b-41d4-a716-446655440011")
+        claimant = self.start("send", input_value)
+        self.wait_for_calls("send", 1)
+        with sqlite3.connect(self.state_path) as connection:
+            began = connection.execute(
+                "SELECT mutation_call_began FROM mutation_receipts WHERE mutation_id = ?",
+                (input_value["mutation_id"],),
+            ).fetchone()
+        self.assertEqual((1,), began)
+        claimant.kill()
+        claimant.communicate(timeout=5)
+        repeated = self.invoke("send", input_value)
+        self.assertTrue(repeated.stdout, repeated.stderr)
+        self.assertEqual(
+            "outcome_unknown",
+            self.value(repeated)["code"],
+            repeated.stdout + repeated.stderr,
+        )
+        self.assertEqual(1, len(self.calls_for("send")))
+
+    def test_junk_prefers_spam_reporting_and_replays_without_a_second_call(self) -> None:
+        listed = self.value(self.invoke("list", {"limit": 1}))["result"]
+        message_ref = listed["messages"][0]["message_ref"]
+        self.update_adapter_state(
+            junk_capabilities={"report_spam": True, "move_to_junk": True}
+        )
+        input_value = {
+            "message_ref": message_ref,
+            "mutation_id": "550e8400-e29b-41d4-a716-446655440020",
+        }
+        first = self.invoke("junk", input_value)
+        second = self.invoke("junk", input_value)
+        result = self.value(first)["result"]
+        self.assertEqual("report_spam", result["mechanism"])
+        self.assertEqual(self.value(first), self.value(second))
+        self.assertEqual(1, len(self.calls_for("junk_capabilities")))
+        self.assertEqual(1, len(self.calls_for("report_spam")))
+        self.assertEqual(0, len(self.calls_for("move_to_junk")))
+        self.assertEqual([], json.loads(self.adapter_state.read_text())["messages"])
+
+    def test_junk_fallback_unsupported_and_ambiguity_are_bounded(self) -> None:
+        listed = self.value(self.invoke("list", {"limit": 1}))["result"]
+        message_ref = listed["messages"][0]["message_ref"]
+        self.update_adapter_state(
+            junk_capabilities={"report_spam": False, "move_to_junk": True}
+        )
+        moved = self.invoke(
+            "junk",
+            {
+                "message_ref": message_ref,
+                "mutation_id": "550e8400-e29b-41d4-a716-446655440021",
+            },
+        )
+        self.assertEqual("move_to_junk", self.value(moved)["result"]["mechanism"])
+
+        self.write_adapter_state([message("lower-id-1", "Body")])
+        self.update_adapter_state(
+            junk_capabilities={"report_spam": False, "move_to_junk": False}
+        )
+        unsupported_input = {
+            "message_ref": message_ref,
+            "mutation_id": "550e8400-e29b-41d4-a716-446655440022",
+        }
+        unsupported = self.invoke("junk", unsupported_input)
+        self.assertEqual("unsupported", self.value(unsupported)["code"])
+
+        self.update_adapter_state(
+            junk_capabilities={"report_spam": False, "move_to_junk": True},
+            behavior={"move_to_junk": "lost_response"},
+        )
+        unknown_input = {
+            "message_ref": message_ref,
+            "mutation_id": "550e8400-e29b-41d4-a716-446655440023",
+        }
+        unknown = self.invoke("junk", unknown_input)
+        repeated = self.invoke("junk", unknown_input)
+        self.assertEqual("outcome_unknown", self.value(unknown)["code"])
+        self.assertEqual(self.value(unknown), self.value(repeated))
+        self.assertEqual(2, len(self.calls_for("move_to_junk")))
+
+    def test_hung_mutation_becomes_unknown_and_cannot_retry(self) -> None:
+        self.write_config(ALL_GRANTS, wait_seconds=0.15)
+        self.update_adapter_state(behavior={"send": "hang"})
+        input_value = send_input("550e8400-e29b-41d4-a716-446655440030")
+        first = self.invoke("send", input_value)
+        second = self.invoke("send", input_value)
+        self.assertEqual("outcome_unknown", self.value(first)["code"])
+        self.assertEqual(self.value(first), self.value(second))
+        self.assertEqual(1, len(self.calls_for("send")))
+
+    def test_finite_query_timeout_and_cleanup_preserve_decidable_results(self) -> None:
+        self.write_config(ALL_GRANTS, wait_seconds=0.15)
+        self.update_adapter_state(behavior={"list": "hang"})
+        timed_out = self.invoke("list", {"limit": 1})
+        self.assertEqual("backend_unavailable", self.value(timed_out)["code"])
+
+        self.update_adapter_state(behavior={"list": "cleanup_hang"})
+        proved = self.invoke("list", {"limit": 1})
+        self.assertEqual(0, proved.returncode, proved.stderr)
+        self.assertEqual(1, len(self.value(proved)["result"]["messages"]))
+        diagnostics = [json.loads(line) for line in proved.stderr.splitlines()]
+        self.assertTrue(any(item.get("forced_termination") for item in diagnostics))
+
 
 def composition_input() -> dict[str, object]:
     return {
@@ -213,6 +418,12 @@ def composition_input() -> dict[str, object]:
 
 def composition_value() -> dict[str, object]:
     return {"kind": "new", **composition_input(), "reply_to_message_ref": None}
+
+
+def send_input(
+    mutation_id: str = "550e8400-e29b-41d4-a716-446655440000",
+) -> dict[str, object]:
+    return {"composition": composition_value(), "mutation_id": mutation_id}
 
 
 def message(adapter_id: str, body: str, subject: str = "Status") -> dict[str, object]:
