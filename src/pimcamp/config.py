@@ -26,11 +26,23 @@ class AdapterConfig:
 
 
 @dataclass(frozen=True)
+class HimalayaConfig:
+    kind: str
+    executable: str
+    account: str
+    config_paths: tuple[str, ...]
+    inbox: str
+    junk_mailbox: str | None
+    sender: dict[str, str | None]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Config:
     credentials: dict[str, Client]
     adapter_wait_seconds: float
     state_path: Path
-    operations: AdapterConfig
+    operations: AdapterConfig | HimalayaConfig
     observation: AdapterConfig
     operations_fingerprint: str
 
@@ -114,7 +126,9 @@ def _credentials(value: Any) -> dict[str, Client]:
     return clients
 
 
-def _adapter(value: Any, expected: str) -> AdapterConfig:
+def _adapter(value: Any, expected: str) -> AdapterConfig | HimalayaConfig:
+    if expected == "operations" and isinstance(value, dict) and value.get("kind") == "himalaya":
+        return _himalaya(value)
     if not isinstance(value, dict) or value.get("kind") != "command" or set(value) != {
         "kind",
         "command",
@@ -126,3 +140,67 @@ def _adapter(value: Any, expected: str) -> AdapterConfig:
     ):
         raise unavailable(f"Pimcamp {expected} adapter command is invalid.")
     return AdapterConfig(kind="command", command=tuple(command), raw=value)
+
+
+def _himalaya(value: dict[str, Any]) -> HimalayaConfig:
+    if set(value) != {
+        "kind",
+        "executable",
+        "account",
+        "config_paths",
+        "inbox",
+        "junk_mailbox",
+        "from",
+    }:
+        raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
+    executable = value["executable"]
+    account = value["account"]
+    config_paths = value["config_paths"]
+    inbox = value["inbox"]
+    junk = value["junk_mailbox"]
+    sender = value["from"]
+    if any(
+        not isinstance(item, str) or not item
+        for item in (executable, account, inbox)
+    ):
+        raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
+    if not isinstance(config_paths, list) or any(
+        not isinstance(path, str) or not path for path in config_paths
+    ):
+        raise unavailable("Pimcamp Himalaya config paths are invalid.")
+    if junk is not None and (not isinstance(junk, str) or not junk):
+        raise unavailable("Pimcamp Himalaya junk mailbox is invalid.")
+    if (
+        not isinstance(sender, dict)
+        or set(sender) != {"name", "address"}
+        or (
+            sender["name"] is not None
+            and not isinstance(sender["name"], str)
+        )
+        or not isinstance(sender["address"], str)
+        or not _sendable_address(sender["address"])
+        or (
+            sender["name"] is not None
+            and ("\r" in sender["name"] or "\n" in sender["name"])
+        )
+    ):
+        raise unavailable("Pimcamp Himalaya sender is invalid.")
+    return HimalayaConfig(
+        kind="himalaya",
+        executable=executable,
+        account=account,
+        config_paths=tuple(config_paths),
+        inbox=inbox,
+        junk_mailbox=junk,
+        sender={"name": sender["name"], "address": sender["address"]},
+        raw=value,
+    )
+
+
+def _sendable_address(value: str) -> bool:
+    if value.count("@") != 1 or any(
+        ord(char) <= 32 or ord(char) == 127 for char in value
+    ):
+        return False
+    local, domain = value.split("@")
+    return bool(local and domain)

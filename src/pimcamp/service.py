@@ -17,7 +17,12 @@ class Service:
     def __init__(self, config: Config, state: State | None, client_identity: str):
         self.config = config
         self.state = state
-        self.operations = CommandOperationsAdapter(config.operations)
+        if config.operations.kind == "himalaya":
+            from .himalaya import HimalayaOperationsAdapter
+
+            self.operations = HimalayaOperationsAdapter(config.operations)
+        else:
+            self.operations = CommandOperationsAdapter(config.operations)
         self.client_identity = client_identity
 
     def execute(self, operation: str, value: dict[str, Any]) -> dict[str, Any]:
