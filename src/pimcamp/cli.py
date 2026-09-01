@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     client_identity: str | None = None
     mutation_id: str | None = None
+    adapter_class: str | None = None
     state: State | None = None
     try:
         request = loads_one(sys.stdin.buffer.read())
@@ -33,6 +34,13 @@ def main(argv: list[str] | None = None) -> int:
         if credential is None:
             raise PimcampError("permission_denied", "The client is not permitted to use this operation.")
         config = load()
+        adapter_class = (
+            "observation_command"
+            if operation == "subscribe_new_mail"
+            else "himalaya"
+            if config.operations.kind == "himalaya"
+            else "operations_command"
+        )
         client = config.authenticate(credential)
         if client is None or operation not in client.grants:
             raise PimcampError("permission_denied", "The client is not permitted to use this operation.")
@@ -51,10 +59,18 @@ def main(argv: list[str] | None = None) -> int:
             mutation_id=mutation_id,
             duration_ms=int((time.monotonic() - started) * 1000),
             result_code="success",
+            adapter_class=adapter_class,
         )
         return 0
     except PimcampError as exc:
-        return _finish_error(exc, operation, client_identity, started, mutation_id)
+        return _finish_error(
+            exc,
+            operation,
+            client_identity,
+            started,
+            mutation_id,
+            adapter_class,
+        )
     except Exception:
         return _finish_error(
             PimcampError("backend_unavailable", "Pimcamp could not complete the operation."),
@@ -62,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             client_identity,
             started,
             mutation_id,
+            adapter_class,
         )
     finally:
         if state is not None:
@@ -116,6 +133,7 @@ def _subscribe(config: Config, client_identity: str, started: float) -> int:
             operation="subscribe_new_mail",
             duration_ms=int((time.monotonic() - started) * 1000),
             result_code="success",
+            adapter_class=adapter.adapter_class,
         )
         return 0
     finally:
@@ -129,6 +147,7 @@ def _finish_error(
     client_identity: str | None,
     started: float,
     mutation_id: str | None = None,
+    adapter_class: str | None = None,
 ) -> int:
     sys.stdout.write(dumps_line(error.public_value()))
     sys.stdout.flush()
@@ -139,5 +158,6 @@ def _finish_error(
         mutation_id=mutation_id,
         duration_ms=duration,
         result_code=error.code,
+        adapter_class=adapter_class,
     )
     return 1
