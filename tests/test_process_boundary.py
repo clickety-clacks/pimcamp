@@ -69,6 +69,7 @@ class BoundaryCase(unittest.TestCase):
                     "messages": messages,
                     "observation_event_file": str(self.observation_event),
                     "private_sentinel": "PRIVATE-OBSERVATION-SENTINEL",
+                    "private_operations_sentinel": "PRIVATE-OPERATIONS-SENTINEL",
                 }
             )
         )
@@ -493,6 +494,109 @@ class BoundaryCase(unittest.TestCase):
         diagnostics = [json.loads(line) for line in stderr.splitlines()]
         self.assertTrue(any(item.get("forced_termination") for item in diagnostics))
         self.assertEqual(1, len(self.calls_for("observation_close")))
+
+    def test_diagnostics_keep_content_out_and_retain_safe_evidence(self) -> None:
+        address_sentinel = "address-sentinel@example.test"
+        subject_sentinel = "SUBJECT-SENTINEL-713"
+        body_sentinel = "BODY-SENTINEL-829"
+        credential_sentinel = "CREDENTIAL-SENTINEL-947"
+        operations_sentinel = "PRIVATE-OPERATIONS-SENTINEL-263"
+        observation_sentinel = "PRIVATE-OBSERVATION-SENTINEL-419"
+        self.credential = credential_sentinel
+        self.write_config(ALL_GRANTS)
+        private_message = message("lower-id-1", body_sentinel, subject_sentinel)
+        private_message["from"] = [{"name": None, "address": address_sentinel}]
+        self.write_adapter_state([private_message])
+        self.update_adapter_state(
+            private_operations_sentinel=operations_sentinel,
+            private_sentinel=observation_sentinel,
+        )
+
+        successful_query = self.invoke("list", {"limit": 1})
+        self.assertEqual(0, successful_query.returncode, successful_query.stderr)
+
+        self.update_adapter_state(behavior={"list": "private_violation"})
+        failed_query = self.invoke("list", {"limit": 1})
+        self.assertEqual("backend_unavailable", self.value(failed_query)["code"])
+
+        self.update_adapter_state(behavior={"send": "success"})
+        successful_input = send_input("550e8400-e29b-41d4-a716-446655440040")
+        successful_input["composition"]["body_text"] = body_sentinel
+        successful_mutation = self.invoke("send", successful_input)
+        self.assertEqual(0, successful_mutation.returncode, successful_mutation.stderr)
+
+        self.update_adapter_state(behavior={"send": "lost_response"})
+        ambiguous_input = send_input("550e8400-e29b-41d4-a716-446655440041")
+        ambiguous_input["composition"]["subject"] = subject_sentinel
+        ambiguous_mutation = self.invoke("send", ambiguous_input)
+        self.assertEqual("outcome_unknown", self.value(ambiguous_mutation)["code"])
+
+        self.update_adapter_state(observation_behavior="malformed_event")
+        subscription = self.start("subscribe_new_mail", {})
+        self.read_process_line(subscription)
+        self.observation_event.touch()
+        subscription_error = self.read_process_line(subscription)
+        subscription_stdout, subscription_stderr = subscription.communicate(timeout=5)
+        self.assertEqual(1, subscription.returncode)
+
+        evidence = "".join(
+            (
+                successful_query.stderr,
+                failed_query.stdout,
+                failed_query.stderr,
+                successful_mutation.stderr,
+                ambiguous_mutation.stdout,
+                ambiguous_mutation.stderr,
+                subscription_error,
+                subscription_stdout,
+                subscription_stderr,
+            )
+        )
+        for sentinel in (
+            address_sentinel,
+            subject_sentinel,
+            body_sentinel,
+            credential_sentinel,
+            operations_sentinel,
+            observation_sentinel,
+        ):
+            self.assertNotIn(sentinel, evidence)
+
+        diagnostics = [
+            json.loads(line)
+            for stderr in (
+                successful_query.stderr,
+                failed_query.stderr,
+                successful_mutation.stderr,
+                ambiguous_mutation.stderr,
+                subscription_stderr,
+            )
+            for line in stderr.splitlines()
+        ]
+        self.assertTrue(
+            any(
+                item.get("operation") == "list"
+                and item.get("result_code") == "success"
+                and item.get("adapter_class") == "operations_command"
+                for item in diagnostics
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("operation") == "send"
+                and item.get("result_code") == "outcome_unknown"
+                and item.get("mutation_id") == ambiguous_input["mutation_id"]
+                for item in diagnostics
+            )
+        )
+        self.assertTrue(
+            any(
+                item.get("operation") == "subscribe_new_mail"
+                and item.get("result_code") == "backend_unavailable"
+                and item.get("adapter_class") == "observation_command"
+                for item in diagnostics
+            )
+        )
 
 
 def composition_input() -> dict[str, object]:

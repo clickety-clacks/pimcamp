@@ -31,6 +31,8 @@ def main() -> int:
     if operation == "list":
         if behavior.get("list") == "hang":
             hang()
+        if behavior.get("list") == "private_violation":
+            return output({"private": state["private_operations_sentinel"]})
         cursor = request.get("cursor")
         try:
             offset = 0 if cursor is None else int(cursor.removeprefix("page:"))
