@@ -1,14 +1,19 @@
 """Pimcamp-owned private adapter ports."""
 
+import json
 import os
+from pathlib import Path
 import queue
 import signal
 import subprocess
+import sys
+import tempfile
 import threading
 import time
+import tomllib
 from typing import Any
 
-from .config import AdapterConfig
+from .config import AdapterConfig, MiradorConfig
 from .diagnostics import emit
 from .errors import ERROR_CODES, PimcampError, unavailable
 from .jsonio import dumps_line, loads_one
@@ -104,7 +109,7 @@ class CommandObservationAdapter:
         self.process: subprocess.Popen[bytes] | None = None
         self.output: queue.Queue[bytes] = queue.Queue(maxsize=64)
 
-    def open(self, deadline: float, stop: threading.Event) -> bool:
+    def start(self, deadline: float, stop: threading.Event) -> bool:
         command = [*self.command, "subscribe"]
         try:
             self.process = subprocess.Popen(
@@ -115,7 +120,7 @@ class CommandObservationAdapter:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise unavailable("The observation adapter could not open.") from exc
+            raise unavailable("The observation adapter could not start.") from exc
         assert self.process.stdin is not None
         assert self.process.stdout is not None
         try:
@@ -123,7 +128,7 @@ class CommandObservationAdapter:
             self.process.stdin.close()
         except (BrokenPipeError, OSError) as exc:
             _kill(self.process)
-            raise unavailable("The observation adapter could not open.") from exc
+            raise unavailable("The observation adapter could not start.") from exc
 
         def read_lines() -> None:
             assert self.process is not None
@@ -139,8 +144,8 @@ class CommandObservationAdapter:
         if line is None:
             return False
         result = _decode_port_result(line)
-        if result != {"status": "subscribed"}:
-            raise unavailable("The observation adapter did not confirm a live subscription.")
+        if result != {"status": "started"}:
+            raise unavailable("The observation adapter did not confirm execution start.")
         return not stop.is_set()
 
     def next_event(self, stop: threading.Event) -> bool:
@@ -185,7 +190,7 @@ class CommandObservationAdapter:
                     assert self.process is not None
                     _kill(self.process)
                     emit(adapter_class=self.adapter_class, forced_termination=True)
-                    raise unavailable("The observation adapter exceeded its open bound.")
+                    raise unavailable("The observation adapter exceeded its start bound.")
                 wait = min(wait, remaining)
             try:
                 line = self.output.get(timeout=wait)
@@ -194,6 +199,146 @@ class CommandObservationAdapter:
             if not line:
                 raise unavailable("The observation adapter stopped.")
             return line
+
+
+class MiradorObservationAdapter(CommandObservationAdapter):
+    """Real binding for current Mirador, whose binary is named Carillon.
+
+    Carillon reports mail arrivals only through configured hooks. Pimcamp adds
+    one private overlay for this child execution. The hook writes a constant
+    signal to the child's stdout and does not copy any lower event field.
+    """
+
+    adapter_class = "mirador"
+
+    def __init__(self, config: MiradorConfig):
+        self.config = config
+        self.process: subprocess.Popen[bytes] | None = None
+        self.output: queue.Queue[bytes] = queue.Queue(maxsize=64)
+        self.temporary: tempfile.TemporaryDirectory[str] | None = None
+        self.hook_table = "hook"
+
+    def start(self, deadline: float, stop: threading.Event) -> bool:
+        if stop.is_set():
+            return False
+        _remaining(deadline)
+        self.hook_table = self._inspect_config()
+        overlay = self._write_overlay()
+        config_paths = ":".join([*self.config.config_paths, str(overlay)])
+        command = [
+            self.config.executable,
+            "--config",
+            config_paths,
+            "--account",
+            self.config.account,
+            "--backend",
+            self.config.backend,
+            "watch",
+        ]
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self._cleanup_overlay()
+            raise unavailable("The Mirador observation execution could not start.") from exc
+        assert self.process.stdout is not None
+
+        def read_lines() -> None:
+            assert self.process is not None
+            assert self.process.stdout is not None
+            while True:
+                line = self.process.stdout.readline()
+                self.output.put(line)
+                if not line:
+                    return
+
+        threading.Thread(target=read_lines, daemon=True).start()
+        try:
+            _remaining(deadline)
+        except PimcampError:
+            _kill(self.process)
+            self._cleanup_overlay()
+            raise
+        return not stop.is_set()
+
+    def close(self, deadline: float) -> None:
+        try:
+            super().close(deadline)
+        finally:
+            self._cleanup_overlay()
+
+    def _write_overlay(self) -> Path:
+        try:
+            self.temporary = tempfile.TemporaryDirectory(
+                prefix="pimcamp-observation-"
+            )
+            path = Path(self.temporary.name) / "pimcamp-hook.toml"
+            hook_program = (
+                "import sys;"
+                "sys.stdout.write('{\"event\":\"new_mail\"}\\n');"
+                "sys.stdout.flush()"
+            )
+            values = [sys.executable, "-c", hook_program]
+            command = ", ".join(json.dumps(item) for item in values)
+            account = json.dumps(self.config.account)
+            path.write_text(
+                f"[accounts.{account}.{self.config.backend}.{self.hook_table}.on-message-added]\n"
+                f"cmd = [{command}]\n",
+                encoding="utf-8",
+            )
+            os.chmod(path, 0o600)
+            return path
+        except OSError as exc:
+            self._cleanup_overlay()
+            raise unavailable("The Mirador observation overlay is unavailable.") from exc
+
+    def _cleanup_overlay(self) -> None:
+        if self.temporary is None:
+            return
+        try:
+            self.temporary.cleanup()
+        except OSError:
+            pass
+        finally:
+            self.temporary = None
+
+    def _inspect_config(self) -> str:
+        merged: dict[str, Any] = {}
+        try:
+            for configured in self.config.config_paths:
+                path = Path(os.path.expandvars(configured)).expanduser()
+                with path.open("rb") as stream:
+                    _deep_merge(merged, tomllib.load(stream))
+            account = merged["accounts"][self.config.account]
+            backend = account[self.config.backend]
+        except (KeyError, OSError, TypeError, tomllib.TOMLDecodeError) as exc:
+            raise unavailable("The Mirador observation configuration is invalid.") from exc
+        if not isinstance(backend, dict):
+            raise unavailable("The Mirador observation configuration is invalid.")
+        if "hook" in backend and "hooks" in backend:
+            raise unavailable("The Mirador observation hook configuration is ambiguous.")
+        hook_table = "hooks" if "hooks" in backend else "hook"
+        hooks = backend.get(hook_table, {})
+        if not isinstance(hooks, dict) or set(hooks) - {"on-message-added"}:
+            raise unavailable("The Mirador observation configuration has extra hooks.")
+        arrival = hooks.get("on-message-added", {})
+        if not isinstance(arrival, dict) or "notify" in arrival:
+            raise unavailable("The Mirador observation configuration has a notification hook.")
+        return hook_table
+
+
+def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key, value in source.items():
+        current = target.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            _deep_merge(current, value)
+        else:
+            target[key] = value
 
 
 def _port_result(value: Any) -> Any:

@@ -38,12 +38,22 @@ class HimalayaConfig:
 
 
 @dataclass(frozen=True)
+class MiradorConfig:
+    kind: str
+    executable: str
+    account: str
+    backend: str
+    config_paths: tuple[str, ...]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Config:
     credentials: dict[str, Client]
     adapter_wait_seconds: float
     state_path: Path
     operations: AdapterConfig | HimalayaConfig
-    observation: AdapterConfig
+    observation: AdapterConfig | MiradorConfig
     operations_fingerprint: str
 
     def authenticate(self, credential: str) -> Client | None:
@@ -126,9 +136,13 @@ def _credentials(value: Any) -> dict[str, Client]:
     return clients
 
 
-def _adapter(value: Any, expected: str) -> AdapterConfig | HimalayaConfig:
+def _adapter(
+    value: Any, expected: str
+) -> AdapterConfig | HimalayaConfig | MiradorConfig:
     if expected == "operations" and isinstance(value, dict) and value.get("kind") == "himalaya":
         return _himalaya(value)
+    if expected == "observation" and isinstance(value, dict) and value.get("kind") == "mirador":
+        return _mirador(value)
     if not isinstance(value, dict) or value.get("kind") != "command" or set(value) != {
         "kind",
         "command",
@@ -140,6 +154,38 @@ def _adapter(value: Any, expected: str) -> AdapterConfig | HimalayaConfig:
     ):
         raise unavailable(f"Pimcamp {expected} adapter command is invalid.")
     return AdapterConfig(kind="command", command=tuple(command), raw=value)
+
+
+def _mirador(value: dict[str, Any]) -> MiradorConfig:
+    if set(value) != {
+        "kind",
+        "executable",
+        "account",
+        "backend",
+        "config_paths",
+    }:
+        raise unavailable("Pimcamp Mirador adapter configuration is invalid.")
+    executable = value["executable"]
+    account = value["account"]
+    backend = value["backend"]
+    config_paths = value["config_paths"]
+    if any(not isinstance(item, str) or not item for item in (executable, account)):
+        raise unavailable("Pimcamp Mirador adapter configuration is invalid.")
+    if backend not in {"imap", "jmap", "maildir"}:
+        raise unavailable("Pimcamp Mirador mail backend is invalid.")
+    if not isinstance(config_paths, list) or not config_paths or any(
+        not isinstance(path, str) or not path or ":" in path
+        for path in config_paths
+    ):
+        raise unavailable("Pimcamp Mirador config paths are invalid.")
+    return MiradorConfig(
+        kind="mirador",
+        executable=executable,
+        account=account,
+        backend=backend,
+        config_paths=tuple(config_paths),
+        raw=value,
+    )
 
 
 def _himalaya(value: dict[str, Any]) -> HimalayaConfig:

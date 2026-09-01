@@ -7,7 +7,7 @@ import threading
 import time
 
 from . import CAPABILITIES, CONTRACT_VERSION
-from .adapters import CommandObservationAdapter
+from .adapters import CommandObservationAdapter, MiradorObservationAdapter
 from .config import Config, load
 from .diagnostics import emit
 from .errors import PimcampError, invalid
@@ -35,7 +35,9 @@ def main(argv: list[str] | None = None) -> int:
             raise PimcampError("permission_denied", "The client is not permitted to use this operation.")
         config = load()
         adapter_class = (
-            "observation_command"
+            "mirador"
+            if operation == "subscribe_new_mail" and config.observation.kind == "mirador"
+            else "observation_command"
             if operation == "subscribe_new_mail"
             else "himalaya"
             if config.operations.kind == "himalaya"
@@ -87,7 +89,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def _subscribe(config: Config, client_identity: str, started: float) -> int:
     stop = threading.Event()
-    adapter = CommandObservationAdapter(config.observation)
+    adapter = (
+        MiradorObservationAdapter(config.observation)
+        if config.observation.kind == "mirador"
+        else CommandObservationAdapter(config.observation)
+    )
     previous_handler = signal.getsignal(signal.SIGTERM)
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -95,7 +101,7 @@ def _subscribe(config: Config, client_identity: str, started: float) -> int:
 
     signal.signal(signal.SIGTERM, request_stop)
     try:
-        opened = adapter.open(
+        opened = adapter.start(
             time.monotonic() + config.adapter_wait_seconds,
             stop,
         )
@@ -104,7 +110,7 @@ def _subscribe(config: Config, client_identity: str, started: float) -> int:
                 dumps_line(
                     {
                         "contract_version": CONTRACT_VERSION,
-                        "result": {"status": "subscribed"},
+                        "result": {"status": "started"},
                     }
                 )
             )
