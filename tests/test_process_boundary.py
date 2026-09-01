@@ -316,6 +316,33 @@ class BoundaryCase(unittest.TestCase):
         self.assertEqual(json.loads(first_stdout), json.loads(second_stdout))
         self.assertEqual(1, len(self.calls_for("send")))
 
+    def test_receipt_lock_contention_cannot_outlive_the_adapter_deadline(self) -> None:
+        self.write_config(ALL_GRANTS, wait_seconds=0.15)
+        initialized = self.invoke("list", {"limit": 1})
+        self.assertEqual(0, initialized.returncode, initialized.stderr)
+
+        connection = sqlite3.connect(self.state_path, isolation_level=None, timeout=0)
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            started = time.monotonic()
+            result = self.invoke(
+                "send",
+                send_input("550e8400-e29b-41d4-a716-446655440099"),
+            )
+            elapsed = time.monotonic() - started
+            receipt_count = connection.execute(
+                "SELECT COUNT(*) FROM mutation_receipts"
+            ).fetchone()
+        finally:
+            connection.execute("ROLLBACK")
+            connection.close()
+
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("backend_unavailable", self.value(result)["code"])
+        self.assertEqual((0,), receipt_count)
+        self.assertEqual(0, len(self.calls_for("send")))
+
     def test_reply_send_preserves_threading_and_lost_response_is_immutable(self) -> None:
         listed = self.value(self.invoke("list", {"limit": 1}))["result"]
         message_ref = listed["messages"][0]["message_ref"]
