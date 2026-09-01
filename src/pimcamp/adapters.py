@@ -41,12 +41,16 @@ class CommandOperationsAdapter:
             raise unavailable() from exc
         assert process.stdin is not None
         assert process.stdout is not None
-        try:
-            process.stdin.write(dumps_line(payload).encode("utf-8"))
-            process.stdin.close()
-        except (BrokenPipeError, OSError) as exc:
-            _kill(process)
-            raise _after_start_error(mutation) from exc
+
+        def write_request() -> None:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(dumps_line(payload).encode("utf-8"))
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        threading.Thread(target=write_request, daemon=True).start()
 
         output: queue.Queue[bytes] = queue.Queue(maxsize=1)
 
@@ -56,7 +60,12 @@ class CommandOperationsAdapter:
         reader = threading.Thread(target=read_line, daemon=True)
         reader.start()
         try:
-            line = output.get(timeout=_remaining(deadline))
+            remaining = _remaining(deadline)
+        except PimcampError as exc:
+            _kill(process)
+            raise _after_start_error(mutation) from exc
+        try:
+            line = output.get(timeout=remaining)
         except queue.Empty as exc:
             _kill(process)
             raise _after_start_error(mutation) from exc
