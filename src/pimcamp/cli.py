@@ -1,10 +1,14 @@
 """JSON/stdio executable boundary."""
 
+from datetime import datetime, timezone
+import signal
 import sys
+import threading
 import time
 
 from . import CAPABILITIES, CONTRACT_VERSION
-from .config import load
+from .adapters import CommandObservationAdapter
+from .config import Config, load
 from .diagnostics import emit
 from .errors import PimcampError, invalid
 from .jsonio import dumps_line, loads_one
@@ -34,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
             raise PimcampError("permission_denied", "The client is not permitted to use this operation.")
         client_identity = client.identity
         mutation_id = value.get("mutation_id")
+        if operation == "subscribe_new_mail":
+            return _subscribe(config, client_identity, started)
         if operation in {"list", "read", "reply", "send", "junk"}:
             state = State(config.state_path)
         result = Service(config, state, client_identity).execute(operation, value)
@@ -60,6 +66,61 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if state is not None:
             state.close()
+
+
+def _subscribe(config: Config, client_identity: str, started: float) -> int:
+    stop = threading.Event()
+    adapter = CommandObservationAdapter(config.observation)
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    try:
+        opened = adapter.open(
+            time.monotonic() + config.adapter_wait_seconds,
+            stop,
+        )
+        if opened:
+            sys.stdout.write(
+                dumps_line(
+                    {
+                        "contract_version": CONTRACT_VERSION,
+                        "result": {"status": "subscribed"},
+                    }
+                )
+            )
+            sys.stdout.flush()
+        while opened and adapter.next_event(stop):
+            if stop.is_set():
+                break
+            observed_at = (
+                datetime.now(timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
+            sys.stdout.write(
+                dumps_line(
+                    {
+                        "contract_version": CONTRACT_VERSION,
+                        "kind": "new_mail",
+                        "mailbox": "inbox",
+                        "observed_at": observed_at,
+                    }
+                )
+            )
+            sys.stdout.flush()
+        emit(
+            client_identity=client_identity,
+            operation="subscribe_new_mail",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            result_code="success",
+        )
+        return 0
+    finally:
+        adapter.close(time.monotonic() + config.adapter_wait_seconds)
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def _finish_error(
