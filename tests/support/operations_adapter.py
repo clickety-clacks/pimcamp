@@ -18,15 +18,18 @@ def main() -> int:
     state_path = Path(sys.argv[1])
     calls_path = Path(sys.argv[2])
     operation = sys.argv[3]
-    request = json.loads(sys.stdin.read())
     state = json.loads(state_path.read_text())
+    behavior = state.get("behavior", {})
+    if behavior.get(operation) == "nonreading_hang":
+        with calls_path.open("a", encoding="utf-8") as calls:
+            calls.write(json.dumps({"operation": operation}, separators=(",", ":")) + "\n")
+        hang()
+    request = json.loads(sys.stdin.read())
     call = {"operation": operation}
     if operation == "send":
         call["threading_present"] = request.get("threading") is not None
     with calls_path.open("a", encoding="utf-8") as calls:
         calls.write(json.dumps(call, separators=(",", ":")) + "\n")
-
-    behavior = state.get("behavior", {})
 
     if operation == "list":
         if behavior.get("list") == "hang":

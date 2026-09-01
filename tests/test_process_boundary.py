@@ -430,6 +430,15 @@ class BoundaryCase(unittest.TestCase):
         self.assertEqual(self.value(first), self.value(second))
         self.assertEqual(1, len(self.calls_for("send")))
 
+    def test_large_mutation_input_cannot_block_the_adapter_deadline(self) -> None:
+        self.write_config(ALL_GRANTS, wait_seconds=0.15)
+        self.update_adapter_state(behavior={"send": "nonreading_hang"})
+        input_value = send_input("550e8400-e29b-41d4-a716-446655440031")
+        input_value["composition"]["body_text"] = "x" * 1_000_000
+        result = self.invoke("send", input_value)
+        self.assertEqual("outcome_unknown", self.value(result)["code"])
+        self.assertEqual(1, len(self.calls_for("send")))
+
     def test_finite_query_timeout_and_cleanup_preserve_decidable_results(self) -> None:
         self.write_config(ALL_GRANTS, wait_seconds=0.15)
         self.update_adapter_state(behavior={"list": "hang"})

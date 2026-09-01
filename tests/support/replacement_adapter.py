@@ -21,6 +21,10 @@ def main() -> int:
         return 2
     state_path, calls_path = Path(sys.argv[1]), Path(sys.argv[2])
     operation = sys.argv[3]
+    state = json.loads(state_path.read_text())
+    if state.get("behavior", {}).get(operation) == "nonreading_hang":
+        record(calls_path, {"operation": operation})
+        forever()
     request = json.loads(sys.stdin.read())
     if operation == "subscribe":
         return observe(state_path, calls_path, request)
