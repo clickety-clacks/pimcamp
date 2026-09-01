@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         mutation_id = value.get("mutation_id")
         if operation in {"list", "read", "reply", "send", "junk"}:
             state = State(config.state_path)
-        result = Service(config, state).execute(operation, value)
+        result = Service(config, state, client_identity).execute(operation, value)
         sys.stdout.write(dumps_line({"contract_version": CONTRACT_VERSION, "result": result}))
         sys.stdout.flush()
         emit(

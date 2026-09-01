@@ -20,7 +20,14 @@ class CommandOperationsAdapter:
     def __init__(self, config: AdapterConfig):
         self.command = config.command
 
-    def call(self, operation: str, payload: dict[str, Any], deadline: float) -> Any:
+    def call(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        deadline: float,
+        *,
+        mutation: bool = False,
+    ) -> Any:
         command = [*self.command, operation]
         try:
             process = subprocess.Popen(
@@ -39,7 +46,7 @@ class CommandOperationsAdapter:
             process.stdin.close()
         except (BrokenPipeError, OSError) as exc:
             _kill(process)
-            raise unavailable() from exc
+            raise _after_start_error(mutation) from exc
 
         output: queue.Queue[bytes] = queue.Queue(maxsize=1)
 
@@ -52,10 +59,10 @@ class CommandOperationsAdapter:
             line = output.get(timeout=_remaining(deadline))
         except queue.Empty as exc:
             _kill(process)
-            raise unavailable("The configured mail adapter exceeded its wait bound.") from exc
+            raise _after_start_error(mutation) from exc
         if not line:
             _kill(process)
-            raise unavailable()
+            raise _after_start_error(mutation)
         try:
             value = loads_one(line)
             result = _port_result(value)
@@ -64,16 +71,19 @@ class CommandOperationsAdapter:
             raise
         except Exception as exc:
             _kill(process)
-            raise unavailable("The configured mail adapter violated its contract.") from exc
+            raise _after_start_error(mutation) from exc
 
         try:
-            process.wait(timeout=_remaining(deadline))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, 0)
+            process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
             _kill(process)
             emit(adapter_class=self.adapter_class, forced_termination=True)
         remainder = process.stdout.read()
         if remainder.strip():
-            raise unavailable("The configured mail adapter violated its contract.")
+            raise _after_start_error(mutation)
         return result
 
 
@@ -108,3 +118,9 @@ def _kill(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
         pass
+
+
+def _after_start_error(mutation: bool) -> PimcampError:
+    if mutation:
+        return PimcampError("outcome_unknown", "The mail mutation outcome is unknown.")
+    return unavailable("The configured mail adapter exceeded or violated its wait bound.")

@@ -1,20 +1,24 @@
 """The seven-capability application boundary."""
 
+import hashlib
 import time
 from typing import Any
 
 from .adapters import CommandOperationsAdapter
 from .config import Config
 from .errors import PimcampError, unavailable
+from .jsonio import canonical_json
+from .receipts import Mutation, ReceiptStore, replay
 from .schema import validate_public_address, validate_rfc3339_utc
 from .state import State
 
 
 class Service:
-    def __init__(self, config: Config, state: State | None):
+    def __init__(self, config: Config, state: State | None, client_identity: str):
         self.config = config
         self.state = state
         self.operations = CommandOperationsAdapter(config.operations)
+        self.client_identity = client_identity
 
     def execute(self, operation: str, value: dict[str, Any]) -> dict[str, Any]:
         if operation == "list":
@@ -25,8 +29,10 @@ class Service:
             return self.compose(value)
         if operation == "reply":
             return self.reply(value)
-        if operation in {"send", "junk"}:
-            raise unavailable("The mutation service is not initialized.")
+        if operation == "send":
+            return self.send(value)
+        if operation == "junk":
+            return self.junk(value)
         raise unavailable("The observation service is not initialized.")
 
     def _deadline(self) -> float:
@@ -91,11 +97,15 @@ class Service:
             "body_parts": value["body_parts"],
         }
 
-    def _read_internal(self, message_ref: str) -> dict[str, Any]:
+    def _read_internal(
+        self, message_ref: str, deadline: float | None = None
+    ) -> dict[str, Any]:
         adapter_id = self._state().resolve_message_ref(
             self.config.operations_fingerprint, message_ref
         )
-        result = self.operations.call("read", {"adapter_id": adapter_id}, self._deadline())
+        result = self.operations.call(
+            "read", {"adapter_id": adapter_id}, deadline or self._deadline()
+        )
         if not isinstance(result, dict) or set(result) != {
             "from",
             "to",
@@ -157,6 +167,130 @@ class Service:
             "body_text": value["body_text"],
             "reply_to_message_ref": value["message_ref"],
         }
+
+    def send(self, value: dict[str, Any]) -> dict[str, Any]:
+        deadline = self._deadline()
+        mutation = self._begin_mutation("send", value, deadline)
+        try:
+            if not mutation.claimant:
+                assert mutation.recorded is not None
+                return replay(mutation.recorded)
+            composition = value["composition"]
+            threading: dict[str, Any] | None = None
+            if composition["kind"] == "reply":
+                source = self._read_internal(
+                    composition["reply_to_message_ref"], deadline
+                )
+                threading = source["threading"]
+            recorded = mutation.mark_call_began()
+            if recorded is not None:
+                return replay(recorded)
+            payload = {"composition": composition, "threading": threading}
+            result = self.operations.call("send", payload, deadline, mutation=True)
+            if not isinstance(result, dict) or result != {"status": "sent"}:
+                raise PimcampError(
+                    "outcome_unknown", "The mail mutation outcome is unknown."
+                )
+            public = {"status": "sent", "mutation_id": value["mutation_id"]}
+            return replay(mutation.finish_success(public))
+        except PimcampError as exc:
+            if not mutation.claimant:
+                raise
+            return replay(mutation.finish_error(exc))
+        except Exception as exc:
+            error = PimcampError(
+                "outcome_unknown" if mutation.call_began else "backend_unavailable",
+                "The mail mutation outcome is unknown."
+                if mutation.call_began
+                else "The mail mutation did not begin.",
+            )
+            try:
+                return replay(mutation.finish_error(error))
+            except PimcampError as recorded:
+                raise recorded from exc
+        finally:
+            mutation.close()
+
+    def junk(self, value: dict[str, Any]) -> dict[str, Any]:
+        deadline = self._deadline()
+        mutation = self._begin_mutation("junk", value, deadline)
+        try:
+            if not mutation.claimant:
+                assert mutation.recorded is not None
+                return replay(mutation.recorded)
+            adapter_id = self._state().resolve_message_ref(
+                self.config.operations_fingerprint, value["message_ref"]
+            )
+            capabilities = self.operations.call("junk_capabilities", {}, deadline)
+            if (
+                not isinstance(capabilities, dict)
+                or set(capabilities) != {"report_spam", "move_to_junk"}
+                or not all(isinstance(item, bool) for item in capabilities.values())
+            ):
+                raise unavailable(
+                    "The operations adapter returned invalid junk capabilities."
+                )
+            if capabilities["report_spam"]:
+                mechanism = "report_spam"
+            elif capabilities["move_to_junk"]:
+                mechanism = "move_to_junk"
+            else:
+                raise PimcampError(
+                    "unsupported", "No supported junk filing mechanism is available."
+                )
+            recorded = mutation.mark_call_began()
+            if recorded is not None:
+                return replay(recorded)
+            result = self.operations.call(
+                mechanism,
+                {"adapter_id": adapter_id},
+                deadline,
+                mutation=True,
+            )
+            if result != {"filed": True}:
+                raise PimcampError(
+                    "outcome_unknown", "The junk filing outcome is unknown."
+                )
+            public = {
+                "status": "filed",
+                "mutation_id": value["mutation_id"],
+                "mechanism": mechanism,
+            }
+            return replay(mutation.finish_success(public))
+        except PimcampError as exc:
+            if not mutation.claimant:
+                raise
+            return replay(mutation.finish_error(exc))
+        except Exception as exc:
+            error = PimcampError(
+                "outcome_unknown" if mutation.call_began else "backend_unavailable",
+                "The junk filing outcome is unknown."
+                if mutation.call_began
+                else "The junk filing did not begin.",
+            )
+            try:
+                return replay(mutation.finish_error(error))
+            except PimcampError as recorded:
+                raise recorded from exc
+        finally:
+            mutation.close()
+
+    def _begin_mutation(
+        self, operation: str, value: dict[str, Any], adapter_deadline: float
+    ) -> Mutation:
+        digest_value = {
+            key: item for key, item in value.items() if key != "mutation_id"
+        }
+        digest = hashlib.sha256(canonical_json(digest_value)).hexdigest()
+        remaining = max(0.0, adapter_deadline - time.monotonic())
+        claim_deadline = time.time() + remaining
+        return ReceiptStore(self._state()).begin(
+            self.client_identity,
+            operation,
+            value["mutation_id"],
+            digest,
+            claim_deadline,
+        )
 
     def _state(self) -> State:
         if self.state is None:
