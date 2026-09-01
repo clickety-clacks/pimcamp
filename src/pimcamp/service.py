@@ -1,0 +1,178 @@
+"""The seven-capability application boundary."""
+
+import time
+from typing import Any
+
+from .adapters import CommandOperationsAdapter
+from .config import Config
+from .errors import PimcampError, unavailable
+from .schema import validate_public_address, validate_rfc3339_utc
+from .state import State
+
+
+class Service:
+    def __init__(self, config: Config, state: State | None):
+        self.config = config
+        self.state = state
+        self.operations = CommandOperationsAdapter(config.operations)
+
+    def execute(self, operation: str, value: dict[str, Any]) -> dict[str, Any]:
+        if operation == "list":
+            return self.list_messages(value)
+        if operation == "read":
+            return self.read_message(value["message_ref"])
+        if operation == "compose":
+            return self.compose(value)
+        if operation == "reply":
+            return self.reply(value)
+        if operation in {"send", "junk"}:
+            raise unavailable("The mutation service is not initialized.")
+        raise unavailable("The observation service is not initialized.")
+
+    def _deadline(self) -> float:
+        return time.monotonic() + self.config.adapter_wait_seconds
+
+    def list_messages(self, value: dict[str, Any]) -> dict[str, Any]:
+        state = self._state()
+        adapter_input = {"limit": value["limit"]}
+        if "cursor" in value:
+            adapter_input["cursor"] = state.resolve_cursor(
+                self.config.operations_fingerprint, value["cursor"]
+            )
+        result = self.operations.call("list", adapter_input, self._deadline())
+        if not isinstance(result, dict) or set(result) != {"messages", "next_cursor"}:
+            raise unavailable("The operations adapter returned an invalid list result.")
+        if not isinstance(result["messages"], list):
+            raise unavailable("The operations adapter returned an invalid list result.")
+        next_cursor = result["next_cursor"]
+        if next_cursor is not None and not isinstance(next_cursor, str):
+            raise unavailable("The operations adapter returned an invalid list result.")
+        messages = [self._summary(item, state) for item in result["messages"]]
+        public_cursor = (
+            None
+            if next_cursor is None
+            else state.store_cursor(self.config.operations_fingerprint, next_cursor)
+        )
+        return {"messages": messages, "next_cursor": public_cursor}
+
+    def _summary(self, value: Any, state: State) -> dict[str, Any]:
+        if not isinstance(value, dict) or set(value) != {
+            "adapter_id",
+            "from",
+            "subject",
+            "received_at",
+            "unread",
+        }:
+            raise unavailable("The operations adapter returned an invalid message summary.")
+        if not isinstance(value["adapter_id"], str) or not isinstance(value["from"], list):
+            raise unavailable("The operations adapter returned an invalid message summary.")
+        if not isinstance(value["subject"], str) or not isinstance(value["unread"], bool):
+            raise unavailable("The operations adapter returned an invalid message summary.")
+        message_ref = state.store_message_ref(
+            self.config.operations_fingerprint, value["adapter_id"]
+        )
+        return {
+            "message_ref": message_ref,
+            "from": [_adapter_address(item) for item in value["from"]],
+            "subject": value["subject"],
+            "received_at": _adapter_time(value["received_at"]),
+            "unread": value["unread"],
+        }
+
+    def read_message(self, message_ref: str) -> dict[str, Any]:
+        value = self._read_internal(message_ref)
+        return {
+            "message_ref": message_ref,
+            "from": value["from"],
+            "to": value["to"],
+            "cc": value["cc"],
+            "subject": value["subject"],
+            "sent_at": value["sent_at"],
+            "body_parts": value["body_parts"],
+        }
+
+    def _read_internal(self, message_ref: str) -> dict[str, Any]:
+        adapter_id = self._state().resolve_message_ref(
+            self.config.operations_fingerprint, message_ref
+        )
+        result = self.operations.call("read", {"adapter_id": adapter_id}, self._deadline())
+        if not isinstance(result, dict) or set(result) != {
+            "from",
+            "to",
+            "cc",
+            "reply_to",
+            "subject",
+            "sent_at",
+            "body_parts",
+            "threading",
+        }:
+            raise unavailable("The operations adapter returned an invalid message.")
+        for field in ("from", "to", "cc", "reply_to"):
+            if not isinstance(result[field], list):
+                raise unavailable("The operations adapter returned an invalid message.")
+            result[field] = [_adapter_address(item) for item in result[field]]
+        if not isinstance(result["subject"], str) or not isinstance(result["threading"], dict):
+            raise unavailable("The operations adapter returned an invalid message.")
+        result["sent_at"] = _adapter_time(result["sent_at"])
+        if not isinstance(result["body_parts"], list):
+            raise unavailable("The operations adapter returned an invalid message.")
+        parts = []
+        for part in result["body_parts"]:
+            if (
+                not isinstance(part, dict)
+                or set(part) != {"media_type", "content_utf8"}
+                or part.get("media_type") not in {"text/plain", "text/html"}
+                or not isinstance(part.get("content_utf8"), str)
+            ):
+                raise unavailable("The operations adapter returned an invalid message body.")
+            parts.append(part)
+        result["body_parts"] = parts
+        return result
+
+    def compose(self, value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "kind": "new",
+            "to": value["to"],
+            "cc": value["cc"],
+            "bcc": value["bcc"],
+            "subject": value["subject"],
+            "body_text": value["body_text"],
+            "reply_to_message_ref": None,
+        }
+
+    def reply(self, value: dict[str, Any]) -> dict[str, Any]:
+        source = self._read_internal(value["message_ref"])
+        recipients = source["reply_to"] or source["from"]
+        if not recipients:
+            raise PimcampError("invalid_request", "The source has no reply recipient.")
+        subject = source["subject"]
+        if not subject[:3].lower() == "re:":
+            subject = f"Re: {subject}"
+        return {
+            "kind": "reply",
+            "to": [recipients[0]],
+            "cc": [],
+            "bcc": [],
+            "subject": subject,
+            "body_text": value["body_text"],
+            "reply_to_message_ref": value["message_ref"],
+        }
+
+    def _state(self) -> State:
+        if self.state is None:
+            raise unavailable("Pimcamp private state is unavailable.")
+        return self.state
+
+
+def _adapter_address(value: Any) -> dict[str, str | None]:
+    try:
+        return validate_public_address(value)
+    except PimcampError as exc:
+        raise unavailable("The operations adapter returned an invalid address.") from exc
+
+
+def _adapter_time(value: Any) -> str | None:
+    try:
+        return validate_rfc3339_utc(value)
+    except PimcampError as exc:
+        raise unavailable("The operations adapter returned an invalid UTC time.") from exc
