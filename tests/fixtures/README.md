@@ -5,9 +5,9 @@ credentialed test account running the supported Himalaya and Mirador versions.
 It must not contain an invented ideal response or event.
 
 No lower-adapter capture is present yet. The current builder has no test-account
-credential, installed lower binary, or reviewed real-observation binding. The
-live suite reports that absence as a specific skip. That skip is not release
-evidence.
+credential or installed lower binary. The reviewed real-observation binding is
+implemented, but the live suite reports the absent real-run inputs as a
+specific skip. That skip is not release evidence.
 
 Before a real capture is committed, redact addresses, subjects, bodies, message
 identifiers, credentials, and local paths while preserving the lower syntax.

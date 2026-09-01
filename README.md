@@ -22,8 +22,10 @@ The reviewed specification is the product authority. A ruled amendment for
 truthful Mirador startup semantics is present at tightbeam-specs commit
 `c898bd4e91b7d8b6f92f2ef421d7845e6868f2be`, artifact `art_8bc4f300`, SHA-256
 `cda69c3763eb5e03efaa577686af196bd6a955b13ab9aa672bb1e16d37a7f542`.
-The real observation binding remains held until that amendment has an
-independent reviewed-clean verdict.
+Its independent reviewed-clean verdict is
+`att_03f441dc-474f-47f5-9e0d-ce773d45146a`; its clause report is
+`art_df06241c`, SHA-256
+`0ef89997f2d334ca36754fffef89430d94f167b2f0d75fb610b12375e464d2a8`.
 
 ## Runtime
 
@@ -66,8 +68,11 @@ The real operations adapter targets Himalaya 2.1.0 source commit
     "from": {"name": "Sender", "address": "sender@example.test"}
   },
   "observation_adapter": {
-    "kind": "command",
-    "command": ["/private/bin/pimcamp-observation-adapter"]
+    "kind": "mirador",
+    "executable": "/usr/bin/carillon",
+    "account": "personal",
+    "backend": "imap",
+    "config_paths": ["/private/carillon/config.toml"]
   }
 }
 ```
@@ -76,6 +81,20 @@ The Himalaya adapter uses explicit SMTP envelope recipients. It does not place
 `Bcc` in the RFC 5322 headers. It reports `move_to_junk` only when deployment
 positively configures `junk_mailbox`; current inspected Himalaya source provides
 no proved spam-reporting call, so the adapter does not claim one.
+
+The real observation adapter targets current Mirador/Carillon 0.1.0 source
+commit `b431f9f793eecdb6e65cc5437318152a7def02c0`. Carillon reports arrivals
+through configured hooks and exposes no post-open watch readiness event.
+Pimcamp starts one Carillon execution with a private, owner-only overlay that
+changes only that execution's `on-message-added` command. The command emits a
+constant internal signal and copies no Carillon event field. Pimcamp returns
+`{status: "started"}` after the execution starts. This result does not claim
+that the backend watch is live; the first normalized event is the real watch
+evidence. The selected backend must be `imap`, `jmap`, or `maildir`, and the
+named Carillon account must configure that backend and its inbox collection.
+Use a dedicated Carillon account configuration with no notification hook and
+no hook other than `on-message-added`; Pimcamp rejects extra hooks so their
+commands cannot share the private event pipe.
 
 A finite invocation looks like this:
 
@@ -120,7 +139,14 @@ Run the credentialed journey separately:
 python3 -m unittest tests.test_live_adapters -v
 ```
 
+The live journey mutates the dedicated test account. A private runner must set
+`PIMCAMP_LIVE_ENABLE=1`, `PIMCAMP_LIVE_CONFIG`,
+`PIMCAMP_LIVE_CREDENTIAL`, `PIMCAMP_LIVE_RECIPIENT`,
+`PIMCAMP_LIVE_HIMALAYA_VERSION`, and `PIMCAMP_LIVE_MIRADOR_VERSION`. The
+recipient must automatically reply with the unique token. Do not put the
+credential value in shell history.
+
 An explicit local skip is honest but is not release evidence. Release evidence
 requires the real journey to pass, real redacted captures, exact tool versions,
 the selected junk mechanism, adapter-call counts, and the content-free
-event/query ordering trace. See `tests/fixtures/README.md`.
+start/event/query ordering trace. See `tests/fixtures/README.md`.
