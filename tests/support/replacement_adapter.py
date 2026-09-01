@@ -136,15 +136,16 @@ def observe(
     state = json.loads(state_path.read_text())
     behavior = state.get("observation_behavior", "event")
     event_file = Path(state["observation_event_file"])
-    record(calls_path, {"operation": "observation_open"})
+    record(calls_path, {"operation": "observation_start"})
     signal.signal(signal.SIGTERM, stop)
-    if behavior == "open_hang":
+    if behavior == "start_hang":
         forever()
-    emit({"ok": {"status": "subscribed"}})
+    emit({"ok": {"status": "started"}})
     sent = False
     while not stop_requested:
         if event_file.exists() and not sent:
             sent = True
+            record(calls_path, {"operation": "observation_source_live"})
             if behavior == "malformed_event":
                 emit(
                     {

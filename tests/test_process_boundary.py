@@ -482,12 +482,14 @@ class BoundaryCase(unittest.TestCase):
     def test_subscription_normalizes_signal_before_authoritative_query(self) -> None:
         subscription = self.start("subscribe_new_mail", {})
         ready = json.loads(self.read_process_line(subscription))
-        self.assertEqual({"status": "subscribed"}, ready["result"])
-        self.assertEqual(1, len(self.calls_for("observation_open")))
+        self.assertEqual({"status": "started"}, ready["result"])
+        self.assertEqual(1, len(self.calls_for("observation_start")))
+        self.assertEqual(0, len(self.calls_for("observation_source_live")))
         self.assertEqual(0, len(self.calls_for("list")))
 
         self.observation_event.touch()
         event = json.loads(self.read_process_line(subscription))
+        self.assertEqual(1, len(self.calls_for("observation_source_live")))
         self.assertEqual(
             {"contract_version", "kind", "mailbox", "observed_at"}, set(event)
         )
@@ -520,9 +522,9 @@ class BoundaryCase(unittest.TestCase):
         self.assertNotIn("PRIVATE-OBSERVATION-SENTINEL", evidence)
         self.assertEqual(1, len(self.calls_for("observation_close")))
 
-    def test_subscription_open_and_close_are_bounded(self) -> None:
+    def test_subscription_start_and_close_are_bounded(self) -> None:
         self.write_config(ALL_GRANTS, wait_seconds=0.15)
-        self.update_adapter_state(observation_behavior="open_hang")
+        self.update_adapter_state(observation_behavior="start_hang")
         timed_out = self.invoke("subscribe_new_mail", {})
         self.assertEqual(1, timed_out.returncode)
         self.assertEqual("backend_unavailable", self.value(timed_out)["code"])

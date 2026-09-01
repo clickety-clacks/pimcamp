@@ -26,16 +26,17 @@ def main() -> int:
     behavior = state.get("observation_behavior", "event")
     event_file = Path(state["observation_event_file"])
 
-    record(calls_path, "observation_open")
+    record(calls_path, "observation_start")
     signal.signal(signal.SIGTERM, request_close)
-    if behavior == "open_hang":
+    if behavior == "start_hang":
         wait_forever()
-    output({"ok": {"status": "subscribed"}})
+    output({"ok": {"status": "started"}})
 
     emitted = False
     while not closing:
         if event_file.exists() and not emitted:
             emitted = True
+            record(calls_path, "observation_source_live")
             if behavior == "malformed_event":
                 output(
                     {
