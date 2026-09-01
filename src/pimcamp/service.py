@@ -197,11 +197,15 @@ class Service:
                     "outcome_unknown", "The mail mutation outcome is unknown."
                 )
             public = {"status": "sent", "mutation_id": value["mutation_id"]}
-            return replay(mutation.finish_success(public))
+            return _finish_proved_success(
+                mutation,
+                public,
+                "The mail mutation outcome is unknown.",
+            )
         except PimcampError as exc:
             if not mutation.claimant:
                 raise
-            return replay(mutation.finish_error(exc))
+            return _finish_with_error(mutation, exc)
         except Exception as exc:
             error = PimcampError(
                 "outcome_unknown" if mutation.call_began else "backend_unavailable",
@@ -209,10 +213,7 @@ class Service:
                 if mutation.call_began
                 else "The mail mutation did not begin.",
             )
-            try:
-                return replay(mutation.finish_error(error))
-            except PimcampError as recorded:
-                raise recorded from exc
+            return _finish_with_error(mutation, error, exc)
         finally:
             mutation.close()
 
@@ -261,11 +262,15 @@ class Service:
                 "mutation_id": value["mutation_id"],
                 "mechanism": mechanism,
             }
-            return replay(mutation.finish_success(public))
+            return _finish_proved_success(
+                mutation,
+                public,
+                "The junk filing outcome is unknown.",
+            )
         except PimcampError as exc:
             if not mutation.claimant:
                 raise
-            return replay(mutation.finish_error(exc))
+            return _finish_with_error(mutation, exc)
         except Exception as exc:
             error = PimcampError(
                 "outcome_unknown" if mutation.call_began else "backend_unavailable",
@@ -273,10 +278,7 @@ class Service:
                 if mutation.call_began
                 else "The junk filing did not begin.",
             )
-            try:
-                return replay(mutation.finish_error(error))
-            except PimcampError as recorded:
-                raise recorded from exc
+            return _finish_with_error(mutation, error, exc)
         finally:
             mutation.close()
 
@@ -315,3 +317,30 @@ def _adapter_time(value: Any) -> str | None:
         return validate_rfc3339_utc(value)
     except PimcampError as exc:
         raise unavailable("The operations adapter returned an invalid UTC time.") from exc
+
+
+def _finish_proved_success(
+    mutation: Mutation,
+    public: dict[str, Any],
+    unknown_message: str,
+) -> dict[str, Any]:
+    try:
+        recorded = mutation.finish_success(public)
+    except PimcampError as store_error:
+        unknown = PimcampError("outcome_unknown", unknown_message)
+        return _finish_with_error(mutation, unknown, store_error)
+    return replay(recorded)
+
+
+def _finish_with_error(
+    mutation: Mutation,
+    error: PimcampError,
+    cause: Exception | None = None,
+) -> dict[str, Any]:
+    try:
+        recorded = mutation.finish_error(error)
+    except PimcampError as store_error:
+        if error.code == "outcome_unknown":
+            raise error from (cause or store_error)
+        raise
+    return replay(recorded)
