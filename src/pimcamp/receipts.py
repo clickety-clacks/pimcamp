@@ -18,24 +18,28 @@ from .state import State
 class Mutation:
     store: "ReceiptStore"
     key: tuple[str, str, str]
+    claim_deadline: float
     lock_fd: int | None
     claimant: bool
     recorded: dict[str, Any] | None
     call_began: bool = False
 
     def mark_call_began(self) -> dict[str, Any] | None:
-        recorded = self.store.mark_call_began(self.key)
+        recorded = self.store.mark_call_began(self.key, self.claim_deadline)
         if recorded is None:
             self.call_began = True
         return recorded
 
     def finish_success(self, result: dict[str, Any]) -> dict[str, Any]:
-        return self.store.finish(self.key, "succeeded", {"ok": result})
+        return self.store.finish(
+            self.key, self.claim_deadline, "succeeded", {"ok": result}
+        )
 
     def finish_error(self, error: PimcampError) -> dict[str, Any]:
         state = "unknown" if error.code == "outcome_unknown" else "failed"
         return self.store.finish(
             self.key,
+            self.claim_deadline,
             state,
             {"error": {"code": error.code, "message": error.message}},
         )
@@ -56,10 +60,14 @@ class ReceiptStore:
         self.connection = state.connection
         self.lock_directory = state.path.parent / "mutation-locks"
         try:
+            # SQLite's connection default may wait beyond this invocation's
+            # absolute claim deadline. Receipt transactions retry explicitly
+            # against that deadline instead.
+            self.connection.execute("PRAGMA busy_timeout = 0")
             self.lock_directory.mkdir(mode=0o700, exist_ok=True)
             if self.lock_directory.stat().st_mode & 0o077:
                 raise unavailable("Pimcamp mutation-lock state is not owner-only.")
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             raise unavailable("Pimcamp mutation-lock state is unavailable.") from exc
 
     def begin(
@@ -73,7 +81,11 @@ class ReceiptStore:
         key = (client_identity, operation, mutation_id)
         lock_fd = self._open_lock(key)
         claimed = _try_lock(lock_fd)
-        row = self._row(key)
+        try:
+            row = self._row_before_deadline(key, claim_deadline)
+        except PimcampError:
+            _unlock_close(lock_fd)
+            raise
 
         while row is None and not claimed:
             if time.time() >= claim_deadline:
@@ -81,11 +93,22 @@ class ReceiptStore:
                 raise unavailable("Pimcamp could not reserve the mutation before its deadline.")
             time.sleep(0.005)
             claimed = _try_lock(lock_fd)
-            row = self._row(key)
+            try:
+                row = self._row_before_deadline(key, claim_deadline)
+            except PimcampError:
+                _unlock_close(lock_fd)
+                raise
 
         if row is None:
             try:
-                self.connection.execute("BEGIN IMMEDIATE")
+                self._begin_immediate(
+                    claim_deadline,
+                    "Pimcamp could not reserve the mutation before its deadline.",
+                )
+                if time.time() >= claim_deadline:
+                    raise unavailable(
+                        "Pimcamp could not reserve the mutation before its deadline."
+                    )
                 self.connection.execute(
                     """
                     INSERT INTO mutation_receipts(
@@ -96,30 +119,40 @@ class ReceiptStore:
                     (*key, request_digest, claim_deadline),
                 )
                 self.connection.execute("COMMIT")
+            except PimcampError:
+                self._rollback()
+                _unlock_close(lock_fd)
+                raise
             except sqlite3.Error as exc:
                 self._rollback()
                 _unlock_close(lock_fd)
                 raise unavailable("Pimcamp could not reserve the mutation receipt.") from exc
-            return Mutation(self, key, lock_fd, True, None)
+            return Mutation(self, key, claim_deadline, lock_fd, True, None)
 
+        stored_deadline = float(row["claim_deadline"])
         if row["request_digest"] != request_digest:
             _unlock_close(lock_fd)
             raise PimcampError("conflict", "The mutation ID belongs to another request.")
         if row["state"] != "reserved":
             recorded = _recorded(row)
             _unlock_close(lock_fd)
-            return Mutation(self, key, None, False, recorded)
+            return Mutation(self, key, stored_deadline, None, False, recorded)
         if claimed:
-            recorded = self._transition(key, "abandoned")
+            recorded = self._transition(key, stored_deadline, "abandoned")
             _unlock_close(lock_fd)
-            return Mutation(self, key, None, False, recorded)
+            return Mutation(self, key, stored_deadline, None, False, recorded)
 
-        recorded = self._await_terminal(key, lock_fd)
-        return Mutation(self, key, None, False, recorded)
+        recorded = self._await_terminal(key, stored_deadline, lock_fd)
+        return Mutation(self, key, stored_deadline, None, False, recorded)
 
-    def mark_call_began(self, key: tuple[str, str, str]) -> dict[str, Any] | None:
+    def mark_call_began(
+        self, key: tuple[str, str, str], claim_deadline: float
+    ) -> dict[str, Any] | None:
         try:
-            self.connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(
+                claim_deadline,
+                "Pimcamp could not mark the mutation before its deadline.",
+            )
             row = self._row(key)
             if row is None:
                 raise unavailable("Pimcamp mutation receipt disappeared.")
@@ -151,11 +184,15 @@ class ReceiptStore:
     def finish(
         self,
         key: tuple[str, str, str],
+        claim_deadline: float,
         state: str,
         recorded: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            self.connection.execute("BEGIN IMMEDIATE")
+            self._begin_immediate(
+                claim_deadline,
+                "Pimcamp could not record the mutation result before its deadline.",
+            )
             row = self._row(key)
             if row is None:
                 raise unavailable("Pimcamp mutation receipt disappeared.")
@@ -185,32 +222,33 @@ class ReceiptStore:
             raise unavailable("Pimcamp could not record the mutation result.") from exc
 
     def _await_terminal(
-        self, key: tuple[str, str, str], lock_fd: int
-    ) -> dict[str, Any]:
-        while True:
-            row = self._row(key)
-            if row is None:
-                _unlock_close(lock_fd)
-                raise unavailable("Pimcamp mutation receipt disappeared.")
-            if row["state"] != "reserved":
-                result = _recorded(row)
-                _unlock_close(lock_fd)
-                return result
-            if time.time() >= row["claim_deadline"]:
-                result = self._transition(key, "expired")
-                _unlock_close(lock_fd)
-                return result
-            if _try_lock(lock_fd):
-                result = self._transition(key, "abandoned")
-                _unlock_close(lock_fd)
-                return result
-            time.sleep(min(0.01, max(0.001, row["claim_deadline"] - time.time())))
-
-    def _transition(
-        self, key: tuple[str, str, str], reason: str
+        self, key: tuple[str, str, str], claim_deadline: float, lock_fd: int
     ) -> dict[str, Any]:
         try:
-            self.connection.execute("BEGIN IMMEDIATE")
+            while True:
+                row = self._row_before_deadline(key, claim_deadline)
+                if row is None:
+                    raise unavailable("Pimcamp mutation receipt disappeared.")
+                if row["state"] != "reserved":
+                    return _recorded(row)
+                if time.time() >= claim_deadline:
+                    return self._transition(key, claim_deadline, "expired")
+                if _try_lock(lock_fd):
+                    return self._transition(key, claim_deadline, "abandoned")
+                time.sleep(
+                    min(0.01, max(0.001, claim_deadline - time.time()))
+                )
+        finally:
+            _unlock_close(lock_fd)
+
+    def _transition(
+        self, key: tuple[str, str, str], claim_deadline: float, reason: str
+    ) -> dict[str, Any]:
+        try:
+            self._begin_immediate(
+                claim_deadline,
+                f"Pimcamp could not close the {reason} mutation claim before its deadline.",
+            )
             row = self._row(key)
             if row is None:
                 raise unavailable("Pimcamp mutation receipt disappeared.")
@@ -273,6 +311,29 @@ class ReceiptStore:
             key,
         ).fetchone()
 
+    def _row_before_deadline(
+        self, key: tuple[str, str, str], claim_deadline: float
+    ) -> sqlite3.Row | None:
+        while True:
+            try:
+                return self._row(key)
+            except sqlite3.OperationalError as exc:
+                if not _database_busy(exc) or time.time() >= claim_deadline:
+                    raise unavailable(
+                        "Pimcamp could not read the mutation receipt before its deadline."
+                    ) from exc
+                time.sleep(min(0.005, claim_deadline - time.time()))
+
+    def _begin_immediate(self, claim_deadline: float, message: str) -> None:
+        while True:
+            try:
+                self.connection.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                if not _database_busy(exc) or time.time() >= claim_deadline:
+                    raise unavailable(message) from exc
+                time.sleep(min(0.005, claim_deadline - time.time()))
+
     def _open_lock(self, key: tuple[str, str, str]) -> int:
         digest = hashlib.sha256("\0".join(key).encode("utf-8")).hexdigest()
         path = self.lock_directory / f"{digest}.lock"
@@ -324,6 +385,14 @@ def _try_lock(fd: int) -> bool:
         return True
     except BlockingIOError:
         return False
+
+
+def _database_busy(error: sqlite3.OperationalError) -> bool:
+    code = getattr(error, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    message = str(error).lower()
+    return "locked" in message or "busy" in message
 
 
 def _unlock_close(fd: int) -> None:
