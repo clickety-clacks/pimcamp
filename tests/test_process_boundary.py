@@ -18,10 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE = ROOT / "pimcamp"
 PORT_ADAPTER = ROOT / "tests" / "support" / "operations_adapter.py"
 OBSERVATION_ADAPTER = ROOT / "tests" / "support" / "observation_adapter.py"
+REPLACEMENT_ADAPTER = ROOT / "tests" / "support" / "replacement_adapter.py"
 ALL_GRANTS = ["list", "read", "compose", "reply", "send", "junk", "subscribe_new_mail"]
 
 
 class BoundaryCase(unittest.TestCase):
+    operations_adapter = PORT_ADAPTER
+    observation_adapter = OBSERVATION_ADAPTER
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -46,13 +50,18 @@ class BoundaryCase(unittest.TestCase):
             "state_path": str(self.state_path),
             "operations_adapter": {
                 "kind": "command",
-                "command": [sys.executable, str(PORT_ADAPTER), str(self.adapter_state), str(self.calls)],
+                "command": [
+                    sys.executable,
+                    str(self.operations_adapter),
+                    str(self.adapter_state),
+                    str(self.calls),
+                ],
             },
             "observation_adapter": {
                 "kind": "command",
                 "command": [
                     sys.executable,
-                    str(OBSERVATION_ADAPTER),
+                    str(self.observation_adapter),
                     str(self.adapter_state),
                     str(self.calls),
                 ],
@@ -597,6 +606,11 @@ class BoundaryCase(unittest.TestCase):
                 for item in diagnostics
             )
         )
+
+
+class ReplacementBoundaryCase(BoundaryCase):
+    operations_adapter = REPLACEMENT_ADAPTER
+    observation_adapter = REPLACEMENT_ADAPTER
 
 
 def composition_input() -> dict[str, object]:
