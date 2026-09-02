@@ -25,28 +25,29 @@ flowchart TB
     Pimcamp[Pimcamp<br/>stable local capability boundary]
 
     Pimcamp --> Himalaya[Himalaya<br/>structured email operations]
-    Pimcamp --> Mirador[Mirador<br/>new-mail observations]
+    Pimcamp --> Mirador[Mirador / Carillon<br/>new-mail observations]
 
     Himalaya --> Providers[Email providers and local stores]
     Mirador --> IMAP[IMAP IDLE]
     Mirador --> JMAP[JMAP push / event stream]
-    Mirador --> Maildir[Maildir events / polling]
+    Mirador --> Maildir[Maildir event detection<br/>by polling]
     IMAP --> Providers
     JMAP --> Providers
     Maildir --> Providers
 
-    Neverest[Neverest<br/>optional synchronization] -. not required by MVP .-> Maildir
+    Neverest[Neverest<br/>optional synchronization] -. not required by MVP .-> Pimdir[Pimdir local replica]
 ```
 
 Pimcamp uses components from the Pimalaya ecosystem behind its boundary:
 
 - [Himalaya](https://github.com/pimalaya/himalaya) provides structured email
   operations.
-- [Mirador](https://github.com/pimalaya/mirador) provides change observation
-  through IMAP IDLE, a JMAP push/event stream, or Maildir events and polling.
+- [Mirador](https://github.com/pimalaya/mirador), now named Carillon, provides
+  change observation through IMAP IDLE, a JMAP push/event stream, or Maildir
+  event detection by polling.
 - [Neverest](https://github.com/pimalaya/neverest) can synchronize email when
-  a deployment needs local copies. Synchronization is optional and is not
-  required by the MVP.
+  a deployment needs a Pimdir local replica. Synchronization is optional and
+  is not required by the MVP.
 
 A future private adapter composition could place Maildir and notmuch beneath
 the same Pimcamp boundary. That composition would reuse the existing public
