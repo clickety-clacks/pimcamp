@@ -29,9 +29,9 @@ flowchart TB
 
     Himalaya --> Providers[Remote email providers]
     Himalaya --> LocalStores[Local stores]
-    Carillon --> IMAP[IMAP IDLE]
-    Carillon --> JMAP[JMAP push / event stream]
-    Carillon --> Maildir[Maildir polling]
+    Carillon --> IMAP[IMAP IDLE<br/>event-based]
+    Carillon --> JMAP[JMAP EventSource<br/>event-based push stream]
+    Carillon --> Maildir[Maildir<br/>polling]
     IMAP --> Providers
     JMAP --> Providers
     Maildir --> LocalStores
@@ -44,9 +44,10 @@ Pimcamp uses components from the Pimalaya ecosystem behind its boundary:
 - [Himalaya](https://github.com/pimalaya/himalaya) provides structured email
   operations.
 - [Carillon](https://github.com/pimalaya/carillon), formerly Mirador, provides
-  change observation through IMAP IDLE, a JMAP push/event stream, or Maildir
-  polling. The [historical Mirador link](https://github.com/pimalaya/mirador)
-  redirects to Carillon.
+  event-based change observation through IMAP IDLE or a JMAP EventSource push
+  stream. It observes Maildir through polling. The
+  [historical Mirador link](https://github.com/pimalaya/mirador) redirects to
+  Carillon.
 - [Neverest](https://github.com/pimalaya/neverest) can synchronize remote
   sources into its local pimdir replica. Synchronization is optional and is
   not required by the MVP.
