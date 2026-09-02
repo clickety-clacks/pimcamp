@@ -25,28 +25,31 @@ flowchart TB
     Pimcamp[Pimcamp<br/>stable local capability boundary]
 
     Pimcamp --> Himalaya[Himalaya<br/>structured email operations]
-    Pimcamp --> Mirador[Mirador<br/>new-mail observations]
+    Pimcamp --> Carillon[Carillon<br/>new-mail observations]
 
-    Himalaya --> Providers[Email providers and local stores]
-    Mirador --> IMAP[IMAP IDLE]
-    Mirador --> JMAP[JMAP push / event stream]
-    Mirador --> Maildir[Maildir events / polling]
+    Himalaya --> Providers[Remote email providers]
+    Himalaya --> LocalStores[Local stores]
+    Carillon --> IMAP[IMAP IDLE]
+    Carillon --> JMAP[JMAP push / event stream]
+    Carillon --> Maildir[Maildir polling]
     IMAP --> Providers
     JMAP --> Providers
-    Maildir --> Providers
+    Maildir --> LocalStores
 
-    Neverest[Neverest<br/>optional synchronization] -. not required by MVP .-> Maildir
+    Providers -. optional synchronization .-> Neverest[Neverest<br/>local pimdir replica<br/>not required by MVP]
 ```
 
 Pimcamp uses components from the Pimalaya ecosystem behind its boundary:
 
 - [Himalaya](https://github.com/pimalaya/himalaya) provides structured email
   operations.
-- [Mirador](https://github.com/pimalaya/mirador) provides change observation
-  through IMAP IDLE, a JMAP push/event stream, or Maildir events and polling.
-- [Neverest](https://github.com/pimalaya/neverest) can synchronize email when
-  a deployment needs local copies. Synchronization is optional and is not
-  required by the MVP.
+- [Carillon](https://github.com/pimalaya/carillon), formerly Mirador, provides
+  change observation through IMAP IDLE, a JMAP push/event stream, or Maildir
+  polling. The [historical Mirador link](https://github.com/pimalaya/mirador)
+  redirects to Carillon.
+- [Neverest](https://github.com/pimalaya/neverest) can synchronize remote
+  sources into its local pimdir replica. Synchronization is optional and is
+  not required by the MVP.
 
 A future private adapter composition could place Maildir and notmuch beneath
 the same Pimcamp boundary. That composition would reuse the existing public
