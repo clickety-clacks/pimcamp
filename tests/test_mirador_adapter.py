@@ -4,17 +4,21 @@ These checks do not imitate a lower event. Credentialed behavior belongs only
 to test_live_adapters.
 """
 
+import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from pimcamp.adapters import MiradorObservationAdapter
-from pimcamp.config import MiradorConfig
+from pimcamp.cli import _subscribe
+from pimcamp.config import MiradorConfig, load
 from pimcamp.errors import PimcampError
 
 
@@ -59,6 +63,47 @@ class MiradorOverlayCase(unittest.TestCase):
             with self.assertRaises(PimcampError) as raised:
                 self._adapter(config_path)._inspect_config()
             self.assertEqual("backend_unavailable", raised.exception.code)
+
+    def test_replaced_operations_adapter_preserves_mirador_subscription(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "pimcamp.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "credentials": {},
+                        "adapter_wait_seconds": 1,
+                        "state_path": str(Path(directory) / "state.sqlite3"),
+                        "operations_adapter": {
+                            "kind": "command",
+                            "command": ["adapter"],
+                        },
+                        "observation_adapter": {
+                            "kind": "mirador",
+                            "executable": "carillon",
+                            "account": "account.with.dots",
+                            "backend": "imap",
+                            "config_paths": ["/private/carillon/config.toml"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.chmod(config_path, 0o600)
+            config = load(config_path)
+            adapter = Mock()
+            adapter.start.return_value = False
+
+            with (
+                patch(
+                    "pimcamp.cli.MiradorObservationAdapter",
+                    return_value=adapter,
+                ) as factory,
+                patch("pimcamp.cli.emit"),
+            ):
+                self.assertEqual(0, _subscribe(config, "client", time.monotonic()))
+
+            factory.assert_called_once_with(config.observation, None)
+            adapter.close.assert_called_once()
 
     def _adapter(self, config_path: Path) -> MiradorObservationAdapter:
         return MiradorObservationAdapter(

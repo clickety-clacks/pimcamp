@@ -8,7 +8,7 @@ import time
 
 from . import CAPABILITIES, CONTRACT_VERSION
 from .adapters import CommandObservationAdapter, MiradorObservationAdapter
-from .config import Config, load
+from .config import Config, HimalayaConfig, load
 from .diagnostics import emit
 from .errors import PimcampError, invalid
 from .jsonio import dumps_line, loads_one
@@ -89,8 +89,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _subscribe(config: Config, client_identity: str, started: float) -> int:
     stop = threading.Event()
+    inbox = (
+        config.operations.inbox
+        if isinstance(config.operations, HimalayaConfig)
+        else None
+    )
     adapter = (
-        MiradorObservationAdapter(config.observation, config.operations.inbox)
+        MiradorObservationAdapter(config.observation, inbox)
         if config.observation.kind == "mirador"
         else CommandObservationAdapter(config.observation)
     )

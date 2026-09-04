@@ -211,7 +211,7 @@ class MiradorObservationAdapter(CommandObservationAdapter):
 
     adapter_class = "mirador"
 
-    def __init__(self, config: MiradorConfig, inbox: str):
+    def __init__(self, config: MiradorConfig, inbox: str | None):
         self.config = config
         self.inbox = inbox
         self.process: subprocess.Popen[bytes] | None = None
@@ -287,11 +287,19 @@ class MiradorObservationAdapter(CommandObservationAdapter):
             values = [sys.executable, "-c", hook_program]
             command = ", ".join(json.dumps(item) for item in values)
             account = json.dumps(self.config.account)
-            path.write_text(
+            mailbox = (
                 f"[accounts.{account}.{self.config.backend}]\n"
                 f"mailbox = {json.dumps(self.inbox)}\n"
-                f"[accounts.{account}.{self.config.backend}.{self.hook_table}.on-message-added]\n"
-                f"cmd = [{command}]\n",
+                if self.inbox is not None
+                else ""
+            )
+            contents = (
+                mailbox
+                + f"[accounts.{account}.{self.config.backend}.{self.hook_table}.on-message-added]\n"
+                f"cmd = [{command}]\n"
+            )
+            path.write_text(
+                contents,
                 encoding="utf-8",
             )
             os.chmod(path, 0o600)
