@@ -211,8 +211,9 @@ class MiradorObservationAdapter(CommandObservationAdapter):
 
     adapter_class = "mirador"
 
-    def __init__(self, config: MiradorConfig):
+    def __init__(self, config: MiradorConfig, inbox: str):
         self.config = config
+        self.inbox = inbox
         self.process: subprocess.Popen[bytes] | None = None
         self.output: queue.Queue[bytes] = queue.Queue(maxsize=64)
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -287,6 +288,8 @@ class MiradorObservationAdapter(CommandObservationAdapter):
             command = ", ".join(json.dumps(item) for item in values)
             account = json.dumps(self.config.account)
             path.write_text(
+                f"[accounts.{account}.{self.config.backend}]\n"
+                f"mailbox = {json.dumps(self.inbox)}\n"
                 f"[accounts.{account}.{self.config.backend}.{self.hook_table}.on-message-added]\n"
                 f"cmd = [{command}]\n",
                 encoding="utf-8",

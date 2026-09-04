@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
 def _subscribe(config: Config, client_identity: str, started: float) -> int:
     stop = threading.Event()
     adapter = (
-        MiradorObservationAdapter(config.observation)
+        MiradorObservationAdapter(config.observation, config.operations.inbox)
         if config.observation.kind == "mirador"
         else CommandObservationAdapter(config.observation)
     )

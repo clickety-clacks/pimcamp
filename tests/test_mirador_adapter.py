@@ -19,12 +19,12 @@ from pimcamp.errors import PimcampError
 
 
 class MiradorOverlayCase(unittest.TestCase):
-    def test_private_hook_overlay_emits_only_the_normalized_signal(self) -> None:
+    def test_private_overlay_satisfies_carillon_0_1_0_mailbox_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "carillon.toml"
             config_path.write_text(
                 '[accounts."account.with.dots".imap]\n'
-                'mailbox = "INBOX"\n',
+                'server = "imaps://imap.example.test"\n',
                 encoding="utf-8",
             )
             adapter = self._adapter(config_path)
@@ -37,6 +37,9 @@ class MiradorOverlayCase(unittest.TestCase):
                 "on-message-added"
             ]["cmd"]
 
+            # Carillon 0.1.0's strict ImapConfig parser requires `mailbox`.
+            backend = parsed["accounts"]["account.with.dots"]["imap"]
+            self.assertEqual("Configured Inbox", backend["mailbox"])
             self.assertEqual([sys.executable, "-c"], command[:2])
             self.assertIn('{"event":"new_mail"}', command[2])
             self.assertNotIn("account.with.dots", command[2])
@@ -66,7 +69,8 @@ class MiradorOverlayCase(unittest.TestCase):
                 backend="imap",
                 config_paths=(str(config_path),),
                 raw={},
-            )
+            ),
+            "Configured Inbox",
         )
 
 
