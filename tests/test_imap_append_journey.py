@@ -214,6 +214,15 @@ def cleanup_message(session: imaplib.IMAP4_SSL, label: str) -> None:
         raise HarnessFailure("append_cleanup_failed")
 
 
+class RecordingImapSession:
+    def __init__(self) -> None:
+        self.uid_arguments: tuple[object, ...] | None = None
+
+    def uid(self, *arguments: object) -> tuple[str, list[bytes]]:
+        self.uid_arguments = arguments
+        return "OK", [b"42"]
+
+
 class AppendHarnessUnitTests(unittest.TestCase):
     def test_server_without_port_uses_imap_tls_default(self) -> None:
         self.assertEqual(("imap.example", 993), parse_server("imap.example"))
@@ -221,10 +230,13 @@ class AppendHarnessUnitTests(unittest.TestCase):
     def test_server_with_port(self) -> None:
         self.assertEqual(("imap.example", 1993), parse_server("imap.example:1993"))
 
-    def test_generated_label_is_safe_for_uid_search_atom(self) -> None:
+    def test_uid_search_serializes_label_as_one_safe_astring(self) -> None:
+        session = RecordingImapSession()
         label = build_test_label()
-        self.assertTrue(label.startswith(TEST_LABEL_PREFIX))
-        self.assertFalse(any(character.isspace() for character in label))
+        self.assertEqual("42", exact_uid(session, label))
+        self.assertEqual(("SEARCH", None, "HEADER", "Subject", label), session.uid_arguments)
+        assert session.uid_arguments is not None
+        self.assertFalse(any(character.isspace() for character in session.uid_arguments[-1]))
 
 
 class RealAppendJourney(unittest.TestCase):
