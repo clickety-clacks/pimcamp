@@ -75,9 +75,7 @@ class HimalayaOperationsAdapter:
             None,
             deadline,
         )
-        if not isinstance(output, dict) or set(output) != {"queued", "envelopes"}:
-            raise unavailable("Himalaya returned an unknown envelope-list shape.")
-        if isinstance(output["queued"], bool) or not isinstance(output["queued"], int):
+        if not isinstance(output, dict) or set(output) != {"envelopes"}:
             raise unavailable("Himalaya returned an unknown envelope-list shape.")
         envelopes = output["envelopes"]
         if not isinstance(envelopes, list):

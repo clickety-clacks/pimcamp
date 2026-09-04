@@ -4,7 +4,9 @@ from email import policy
 from email.parser import BytesParser
 from pathlib import Path
 import sys
+import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -25,6 +27,16 @@ class HimalayaConstructionCase(unittest.TestCase):
             raw={},
         )
         self.adapter = HimalayaOperationsAdapter(config)
+
+    def test_list_accepts_the_published_envelopes_only_object(self) -> None:
+        with patch.object(
+            self.adapter,
+            "_run_json",
+            return_value={"envelopes": []},
+        ):
+            result = self.adapter.call("list", {"limit": 25}, time.monotonic() + 1)
+
+        self.assertEqual({"messages": [], "next_cursor": None}, result)
 
     def test_bcc_stays_in_the_smtp_envelope_and_out_of_the_message_headers(self) -> None:
         composition = {
