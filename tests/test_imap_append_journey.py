@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 BOUND_SECONDS = 120
 START_SECONDS = 30
 SAFE_ENV = {"LC_ALL": "C", "PATH": "/usr/bin:/bin"}
+TEST_LABEL_PREFIX = "PIMCAMP_AC12_APPEND_"
 
 
 class HarnessFailure(Exception):
@@ -181,6 +182,10 @@ def build_message(label: str) -> bytes:
     return message.as_bytes()
 
 
+def build_test_label() -> str:
+    return TEST_LABEL_PREFIX + uuid.uuid4().hex
+
+
 def imap_ok(result: tuple[str, list[bytes | None]]) -> list[bytes | None]:
     status, data = result
     if status != "OK":
@@ -216,6 +221,11 @@ class AppendHarnessUnitTests(unittest.TestCase):
     def test_server_with_port(self) -> None:
         self.assertEqual(("imap.example", 1993), parse_server("imap.example:1993"))
 
+    def test_generated_label_is_safe_for_uid_search_atom(self) -> None:
+        label = build_test_label()
+        self.assertTrue(label.startswith(TEST_LABEL_PREFIX))
+        self.assertFalse(any(character.isspace() for character in label))
+
 
 class RealAppendJourney(unittest.TestCase):
     def test_real_imap_append_journey(self) -> None:
@@ -244,7 +254,7 @@ class RealAppendJourney(unittest.TestCase):
         environment = {**SAFE_ENV, "PIMCAMP_CONFIG": str(config_path)}
         subscription: subprocess.Popen[bytes] | None = None
         session: imaplib.IMAP4_SSL | None = None
-        label = "PIMCAMP AC-12 APPEND " + uuid.uuid4().hex
+        label = build_test_label()
         body = "Non-sensitive Pimcamp AC-12 IMAP APPEND test. " + label
         deadline = time.monotonic() + BOUND_SECONDS
         cleanup_error: HarnessFailure | None = None
