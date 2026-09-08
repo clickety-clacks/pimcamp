@@ -22,6 +22,90 @@ Deep links for review: `index.html#demo=<state>&theme=<system|light|dark>&latenc
 The `<state>` keys are the values in the “Jump to a state” list under Demo controls, for example
 `#demo=google-mismatch&theme=dark&latency=0`.
 
+## Revision 3 (2026-09-08): guided Google sign-in setup
+
+The Google screen’s “no OAuth client” state used to be a dead end: a warning, a dashed “Administrator
+setup” box with a callback address, and no way forward inside the UI. This revision replaces it with a
+one-time, guided **Set up Google sign-in** flow that registers *this installation* with Google. It is
+deliberately separate from choosing a mailbox: the account draft (address, name, reconnect id) is kept
+throughout and the user returns to the ordinary Google sign-in screen when the registration is saved.
+
+**Shape of the flow.** One screen key, `google-setup`, with five parts held in `state.googleSetup.step`:
+
+| Part | `step` | Title | What happens |
+| --- | --- | --- | --- |
+| Intro | `intro` | Set up Google sign-in for this installation | Why this is needed, in plain words; the three parts as an overview; what you need (any Google account that can open Google Cloud console). Warning if Ortie is missing. Primary “Start”. |
+| 1 | `project` | Create a Google Cloud project and turn on Gmail | Two numbered steps with “Open …” links to Google’s project-creation and Gmail API pages. |
+| 2 | `platform` | Describe the app and create its client | Branding, Audience (External vs Internal, Testing consequences), Data access (`https://mail.google.com/`), Create a **Desktop app** client and download its JSON. |
+| 3 | `import` | Bring the client file to this installation | Native file picker only. Preflight of the file’s shape, then one send to the installation. Storage-missing, invalid-file, save-failed and unconfirmed states. |
+| Done | `saved` | Google sign-in is set up on this installation | Summary: where it was saved, public client ID, “client secret in protected storage”, “Google account: not connected yet”. Primary “Continue to Google sign-in”. |
+
+A compact part indicator (`.stepper`: three bars with labels, current label only under 480px) sits under
+the lede on parts 1–3 and shows all parts complete on the Done screen. The shell rail still shows the
+five account steps with “Settings” current and the eyebrow “Set up Google sign-in”, so the user can see
+this is a detour inside adding an account, not a different product.
+
+**Why the copy avoids OAuth vocabulary.** Users are told they are “registering this copy of Pimcamp
+with Google”, that a project is “the container Google uses for this registration”, that the Gmail API
+switch “lets the registration be used for mail”, and that the download is “the client file”. The
+words users will see on Google’s pages (Branding, Audience, Data access, Clients, Desktop app,
+Download JSON, Test users, External/Internal) are used verbatim so they can match them. “OAuth”,
+“scope”, “redirect URI” and “consent screen” do not appear as terms to understand.
+
+**Honesty rules baked into the copy.**
+
+- Personal @gmail.com addresses use **External**; **Internal** only for a Workspace organization the
+  user administers and every mailbox belongs to. Organization restrictions are to be raised with the
+  administrator, never worked around.
+- External apps start in **Testing**: each mailbox must be a test user, and Google ends mail access
+  after 7 days, requiring another sign-in. Publishing for longer-lived access is
+  Google’s process; the UI does not promise unattended long-term access.
+- Registration happens on Google’s official pages, opened in a new tab by plain links styled as
+  buttons (`rel="noopener noreferrer"`, visually hidden “(Google, new tab)”). Nothing Google-hosted is
+  embedded, and no Google login happens inside the setup UI.
+- A saved registration is described as *saved*, never as a connected account. The Done screen states
+  “Google account: Not connected yet” and hands off to the ordinary Google screen, where “Continue with
+  Google” still needs a click. `beginOAuth` is never called automatically.
+- In the preview, the Done screen and any error state carry the purple Demo notice.
+
+**Secret handling.** The file is read only when the user presses Save. Its text lives in a local
+variable for the duration of one `configureGoogleApplication` call and is nulled immediately after
+the request is issued; nothing from it is rendered, logged, put in a URL, kept in `state`, or written
+to browser storage. On success the whole part is replaced by a loading state at once, which destroys
+the file input; on Back or Cancel the screen is replaced, likewise destroying it. After a *failed*
+attempt the chosen file stays in the native input so the user can retry without re-picking. The only
+value the UI ever shows afterwards is the public client ID that the installation reports. Fixtures
+hold no client secret or sample client file; `DEMO_CLIENT_ID` is a public-identifier-shaped string.
+
+**Error and edge states.**
+
+- *Status check failed*: “Couldn’t check this installation” with the service’s message, Back and Try
+  again. Nothing is changed.
+- *Google helper missing* (`helperAvailable: false`): a warning notice on the intro and on part 3
+  with “Check again”. The Google parts can still be done; Save re-checks status first and refuses
+  to send the file while Ortie is unavailable. Protected storage is checked separately when saving.
+  The notice is updated in place so a chosen file is not lost.
+- *Invalid file*: preflight messages distinguish “not a client file”, “Web application client, needs
+  Desktop app”, and “missing client details”; files over 32 KB and unreadable files are rejected before
+  any send. Messages are linked to the field with `aria-describedby`, the input gets `aria-invalid`,
+  focus moves to it, and the assertive region announces it.
+- *Save failed* (service threw): “Saving could not be confirmed” with the service’s user-facing message
+  verbatim, a “Check what was saved” button, and Save available for retry.
+- *Unconfirmed* (no answer within 45 s, or an answer without `configured: true`): “Saving could not be
+  confirmed”. The original request keeps running; if it later succeeds and this attempt is still
+  current, the screen moves to Done. “Check what was saved” asks the installation instead of guessing.
+- *Already configured* when entering the flow (someone else finished): the flow opens on Done with
+  “Already saved” and refreshes the installation facts.
+- *Refresh failed after save*: Done still shows, with a notice telling the user to choose Check again on
+  the Google screen. The installation shape is only ever updated from `beginSetup`.
+- *No endless spinner*: save, status checks and installation refresh are bounded by a 45-second
+  timeout. Navigation is hidden during saving; after an unconfirmed outcome it becomes available
+  again, retaining the account draft.
+
+**Fallback.** If the live service lacks `googleApplicationStatus` / `configureGoogleApplication`, the
+Google screen keeps the plain-language explanation and “Check again”, adds a sentence that guided setup
+is not available from this version, and omits the primary button.
+
 ## Revision 2 (2026-09-08): what changed and why
 
 The first revision placed the title and lede straight on the page background and turned every group of
@@ -52,8 +136,8 @@ screen order and every JavaScript contract, and changes the composition:
   soft ring when a card is `aria-current` (the previously chosen method).
 - **Google panel.** The state panel is a tinted inset (`surface-2`) inside the white sheet; the identity
   card inside it is white, so nesting reads as depth rather than repetition. Follow-up text under the
-  head aligns with the title, not the icon. The administrator section is a dashed inset box, clearly
-  separate from the mailbox flow.
+  head aligns with the title, not the icon. (The dashed administrator box this revision added was
+  replaced by the guided setup flow in revision 3.)
 - **Type scale.** Titles 28px (32px on the empty state, 22px under 480px), weight 650, tighter tracking.
   `text-wrap: balance` on headings and `text-wrap: pretty` on paragraphs where the browser supports it.
 - **Colors.** Success green darkened slightly (`#1b6d3d`) so the “Passed”/“Ready” pills meet 4.5:1 on
@@ -69,7 +153,8 @@ screen order and every JavaScript contract, and changes the composition:
 | 2 | Choose connection | `choose` | Google / Gmail, IMAP & SMTP; previous choice marked with `aria-current` |
 | 3 | Account details | `details` | valid, field errors (format, duplicate address, name length) |
 | 4 | IMAP & SMTP | `imap` | defaults (993/TLS, 465/TLS), STARTTLS port follow, editable presets, shared vs separate outgoing login, password reveal, field errors |
-| 5 | Google | `google` | ready, consent in progress (cancellable), cancelled (by user / at Google), expired, organization policy denied, OAuth client missing (with separated administrator section), authorized matching account, authorized different account (explicit choice) |
+| 5 | Google | `google` | ready, consent in progress (cancellable), cancelled (by user / at Google), expired, organization policy denied, OAuth client missing (explains the one-time registration; primary “Set up Google sign-in” or “Continue setting up…”), authorized matching account, authorized different account (explicit choice) |
+| 5a | Google sign-in setup | `google-setup` | intro, part 1 project, part 2 app and client, part 3 client file (storage not ready, file rejected, saving, save failed, unconfirmed), saved (incl. already configured, refresh failed), status check failed |
 | 6 | Review and connect | `review` | IMAP summary, Google summary, remote installation host row, reconnect note. No secrets rendered. |
 | 7 | Connection results | `connect` | four rows × waiting / checking / passed / failed / unavailable; cancel while checking; retry failed only; per-row repair actions; save failed with nothing changed |
 | 8 | Success | `done` | full success, partial (mail watching unavailable or failed) with a repair action, back / add another |
@@ -134,7 +219,13 @@ partial ring and the visible “Checking…” text carries the meaning.
 - **Presets** fill fields and show a note explaining what was filled; nothing is locked.
 - **Google** shows each outcome as its own state with one clear next action. A mismatched identity is
   never resolved silently: the user picks “Connect <authorized> instead” or “Try again with <entered>”.
-  A missing OAuth client shows a separated “Administrator setup” section with the callback address.
+  A missing OAuth client explains the one-time registration and leads into the guided
+  `google-setup` flow (see Revision 3); “Check again” and “Use IMAP & SMTP instead” remain.
+- **Google sign-in setup** keeps `state.draft` untouched throughout. Back moves one part back (from the
+  intro, back to the Google screen); Cancel returns to the Google screen from any part; both destroy
+  the file input. The part reached is remembered in `state.googleSetup.step`, so returning later says
+  “Continue setting up Google sign-in” and resumes there; the installation’s status is re-read on every
+  entry. Announcements say “<title>. Google sign-in setup, part N of 3.”
 - **Connection results** run incoming sign-in, outgoing sign-in, save, then mail watching. Nothing is
   written unless both sign-ins pass. Cancel is available while checking and hidden during the save.
   Retry re-runs only rows that are not `passed`. Failed rows carry a repair button that returns to the
@@ -188,6 +279,28 @@ data and receives an `AbortSignal` where cancellation is meaningful.
 | `commitAccount(draft, signal)` | Write account-scoped config and credential reference, additive | `{ ok, accountId?, message }` |
 | `observationReadiness(accountId, signal)` | Ask the observation adapter | `{ state: 'passed'|'unavailable'|'failed', message }` |
 | `checkAccount(id)` | Re-check an existing account | updated account record |
+| `googleApplicationStatus()` | Whether this installation is registered with Google and whether the Ortie executable is available (not a vault-readiness check) | `{ configured: boolean, helperAvailable: boolean, clientId?: string }`. `clientId` is Google’s public identifier; no secret is ever returned. Only explicit `helperAvailable: true` means available; missing/empty `clientId` means “not reported”. |
+| `configureGoogleApplication({ credentialsJson })` | Validate a Desktop app client file, store its secret in the protected vault, persist the public configuration | `{ configured: true, clientId: string }`. Anything else (a throw, or a result without `configured: true`) is treated as *not confirmed*: the UI shows a retry and a “Check what was saved” action and never claims success. Saving connects no account. |
+
+Both are implemented by `createDemoService` (outcome chosen in the demo panel; the demo validates the
+file’s shape with the same `inspectClientJson` preflight and keeps only the public client ID). After a
+confirmed save the presentation calls `service.beginSetup(draft.reconnectId || undefined)` to refresh
+`state.installation` (existing shape, `oauthClientConfigured`), which also lets the live service cancel
+an expired setup attempt. `beginOAuth` is never called as part of this.
+
+Presentation additions in this revision (the parent’s test may rely on them): template ids
+`tpl-google-setup`, `tpl-gsetup-intro`, `tpl-gsetup-project`, `tpl-gsetup-platform`,
+`tpl-gsetup-import`, `tpl-gsetup-saved`; slots `eyebrow`, `title`, `lede`, `stepper`, `demo-notice`,
+`body`, `actions`, `storage`, `keep`, `file-meta`, `file-name`, `save-error`, `save-error-title`,
+`save-error-text`, `summary`, `refresh-note`; `data-action` values `setup-back`, `setup-cancel`,
+`setup-next`, `setup-save`, `setup-continue-google`, `recheck-storage`, `check-app-status`; form id
+`gsetup-import-form`; field `f-client-file` with `f-client-file-hint` / `f-client-file-error`;
+classes `.screen__eyebrow`, `.stepper*`, `.gsetup*`, `.guide*`, `.filepick__meta`, `.notice--top`,
+`.notice__actions`; icons `i-file`, `i-cloud`, `i-id`; `state.googleSetup` = `{ step, app, statusError,
+submitting, error, token, refreshFailed, alreadyConfigured }`. Removed: the `admin` slot, the
+`callback` slot, the `.admin*` classes and the `callbackUrl()` helper (a Desktop app client needs no
+registered redirect address). Demo settings gained `googleHelperAvailable` and `googleSetupOutcome`
+(`saved` | `rejected` | `save-failed` | `unconfirmed`). `PimcampOnboardingPreview` is unchanged.
 
 Expectations for the real implementation, from the spec:
 
@@ -195,8 +308,10 @@ Expectations for the real implementation, from the spec:
 - Credentials go to the existing protected storage; the UI passes them once, in a request body, and
   discards them after commit. Tokens are refreshed by the OAuth helper, not by the UI.
 - `beginOAuth` should open the provider URL returned by the backend and wait on a backend-owned status
-  endpoint; the callback port is internal to the backend. The admin section’s callback text should come
-  from the backend rather than `location.origin` once integrated.
+  endpoint; the callback port is internal to the backend and is not shown in the UI.
+- `configureGoogleApplication` should reject anything that is not a Desktop app client (`installed`
+  block) with a user-facing message, store the secret only in the protected vault, and never echo file
+  contents back. Its `clientId` is displayed on the Done screen as-is.
 - `commitAccount` must fail without side effects when the account exists and this setup is not a
   reconnect of that account id.
 - Error messages sent to the UI should already be user-facing; the UI displays `message` verbatim and
@@ -204,8 +319,10 @@ Expectations for the real implementation, from the spec:
 
 **View model** (`state`): `screen`, `accounts`, `installation`, `draft` (nonsecret form state plus
 in-memory passwords), `oauth` (`status`, `identity`, `controller`), `connect` (`rows`, `running`,
-`cancellable`, `saved`, `accountId`). Renderers read from `state` and templates; they never call the
-service directly except through the handlers in the navigation section.
+`cancellable`, `saved`, `accountId`), `googleSetup` (`step`, `app`, `statusError`, `submitting`,
+`error`, `token`, `refreshFailed`, `alreadyConfigured`; never file contents). Renderers read from
+`state` and templates; they never call the service directly except through the handlers in the
+navigation section.
 
 **Templates and hooks.** Every screen and repeating row is a `<template>` with `data-slot` hooks. The
 contract consumed by `app.js` and `tests/browser_onboarding.mjs` is: template ids `tpl-*`; slot names;
@@ -223,8 +340,13 @@ classes the renderers create (`step*`, `panel*`, `identity*`, `notice*`, `check-
 The side sheet (top-right button) drives the demo service:
 
 - Existing-accounts fixture (none / connected / needs reconnect / both).
-- Installation host and remote flag, and whether a Google OAuth client is configured.
-- Simulated outcomes for Google authorization, incoming and outgoing sign-in, saving, and mail watching.
+- Installation host and remote flag, whether a Google OAuth client is configured, and whether the
+  Google sign-in helper is available.
+- Simulated outcomes for saving the Google registration (saved / rejected / fails / never answers),
+  Google authorization, incoming and outgoing sign-in, saving, and mail watching. To exercise the file
+  picker in the preview, use an `installed` object containing a Google-shaped `client_id` and a
+  nonempty `client_secret` (at most 4096 characters, no NUL). A file with a `web` block is rejected.
+  No sample client file ships.
 - Simulated latency per operation.
 - A “Jump to a state” list that sets up any screen with sample values, for screenshots and review.
 
@@ -258,10 +380,18 @@ chromium --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=40
 ```
 
 Suggested set: `accounts-empty`, `accounts-list`, `choose`, `details-errors`, `imap`, `imap-errors`,
-`google-progress`, `google-missing`, `google-mismatch`, `review-imap`, `connect-incoming-failed`,
+`google-progress`, `google-missing`, `google-mismatch`, `google-setup-intro`, `google-setup-platform`,
+`google-setup-import`, `google-setup-import-invalid`, `google-setup-storage-missing`,
+`google-setup-save-failed`, `google-setup-saved`, `review-imap`, `connect-incoming-failed`,
 `connect-observe-unavailable`, `done`, `done-partial`, each at 1280 and 375px, light and dark.
 
-**Status of this revision.** The authoring session could not launch Chromium, Node or Python (command
+Gallery states added in revision 3 (all existing names are unchanged): `google-setup-intro`,
+`google-setup-storage-missing`, `google-setup-unavailable`, `google-setup-project`,
+`google-setup-platform`, `google-setup-import`, `google-setup-import-invalid`, `google-setup-saving`,
+`google-setup-save-failed`, `google-setup-saved`. Each renders its heading synchronously with a
+pre-answered status, so the gallery walk needs no service call.
+
+**Status of revision 2.** The authoring session could not launch Chromium, Node or Python (command
 approval was unavailable), so the browser review and screenshots were not run here. What was verified:
 every id, template, slot, action, field and class contract listed above is present in `index.html`;
 the two byte-exact strings the setup server rewrites are unchanged; the stylesheet’s braces balance and
@@ -269,11 +399,25 @@ every selector the renderers rely on has a rule. Subsequent integration-owned
 browser verification passed; see `../../docs/onboarding-integration.md` for the
 separate layout, keyboard, and live-transport fixture evidence.
 
+**Status of revision 3.** Designed directly with Fable 5.1, then integrated and tested separately.
+Chromium passed 210 layout checks (35 states, three widths, two themes) and 23 interaction checks,
+including duplicate submission, timeout recovery, late success and ignored stale responses.
+Desktop/light and narrow/dark screenshots were also visually inspected. The real local HTTP boundary
+passed a separate 10-check browser fixture journey; this is not real Google consent. Isolated Secret
+Service persistence/restart and Ortie 2.2.0 request construction passed without contacting Google.
+The guide follows the linked official Google documentation; a human-authenticated walk through the
+Google console and real mailbox consent remain unverified.
+
 ## Known limits
 
 - `light-dark()`, `color-mix()` and `:has()` need a current browser (Chromium 123+, Firefox 120+,
   Safari 17.5+). `text-wrap: balance/pretty` degrades to normal wrapping.
 - The preview Google flow is simulated with a timer; the live flow opens a provider window and polls status.
+- The Google setup guide describes Google’s console as of the Google Auth Platform layout (Branding,
+  Audience, Data access, Clients). If Google renames pages, the copy and the “Open …” links in
+  `tpl-gsetup-project` / `tpl-gsetup-platform` are the only places to update.
+- `::file-selector-button` styling needs Chromium 89+, Firefox 82+, Safari 14.1+; older browsers show
+  the native button, which is still usable.
 - Account check on the hub uses fixture outcomes in preview and lower authentication checks in live mode.
 - The `.disclosure` component is styled but unused: the current form has no advanced options section.
   It is kept so a future “Advanced options” block can use progressive disclosure without new CSS.

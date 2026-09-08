@@ -17,6 +17,12 @@ function fixture({detached = false, start} = {}) {
       let result;
       switch (request.action) {
         case 'beginSetup': result = {setupId:'fixture-setup'}; break;
+        case 'cancelSetup': result = {ok:true}; break;
+        case 'googleApplicationStatus': result = {configured:false, helperAvailable:true}; break;
+        case 'configureGoogleApplication':
+          assert.equal(request.credentialsJson, 'fixture-downloaded-json');
+          assert.equal(options.headers['X-Pimcamp-CSRF'], 'fixture');
+          result = {configured:true, clientId:'fixture.apps.googleusercontent.com'}; break;
         case 'beginOAuth':
           if (start) await start();
           result = {authorizationUrl:'https://accounts.google.com/fixture'}; break;
@@ -67,4 +73,13 @@ function fixture({detached = false, start} = {}) {
   await assert.rejects(test.service.beginOAuth({}, new AbortController().signal), /could not be verified/);
   assert.equal(test.actions.at(-1), 'cancelOAuth');
 }
-console.log('Passed 3 OAuth transport lifecycle checks; no network or credentials used.');
+{
+  const test = fixture();
+  await test.service.beginSetup();
+  assert.equal((await test.service.googleApplicationStatus()).configured, false);
+  assert.equal((await test.service.configureGoogleApplication({credentialsJson:'fixture-downloaded-json'})).configured, true);
+  assert.ok(!test.actions.includes('beginOAuth'), 'Import must not silently start account consent');
+  await test.service.beginSetup();
+  assert.deepEqual(test.actions.slice(-2), ['cancelSetup', 'beginSetup']);
+}
+console.log('Passed 4 OAuth transport lifecycle checks; no network or credentials used.');

@@ -178,11 +178,15 @@ class SetupHandler(BaseHTTPRequestHandler):
             if self.headers.get_content_type() != "application/json":
                 raise SetupError("Account settings must be sent as JSON.")
             request = json.loads(self.read_body())
-            if not isinstance(request, dict) or set(request) - {"action", "setupId", "draft", "accountId"}:
+            if not isinstance(request, dict) or set(request) - {"action", "setupId", "draft", "accountId", "credentialsJson"}:
                 raise SetupError("Invalid setup action.")
             action, service = request.get("action"), self.server.service
             if action == "listAccounts":
                 result = service.list_accounts()
+            elif action == "googleApplicationStatus":
+                result = service.google_application_status()
+            elif action == "configureGoogleApplication":
+                result = service.configure_google_application(request.get("credentialsJson"))
             elif action == "beginSetup":
                 result = service.begin(request.get("accountId"))
             elif action == "cancelSetup":

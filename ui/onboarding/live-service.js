@@ -27,6 +27,8 @@
   window.PimcampSetupService = {
     isDemo: false,
     listAccounts: () => call('listAccounts'),
+    googleApplicationStatus: () => call('googleApplicationStatus'),
+    configureGoogleApplication: ({credentialsJson}) => call('configureGoogleApplication', {credentialsJson}),
     async beginSetup(accountId) {
       if (setupId) await call('cancelSetup', {setupId});
       const setup = await call('beginSetup', accountId ? {accountId} : {});

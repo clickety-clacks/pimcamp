@@ -39,6 +39,9 @@
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 20h6M12 16.5V20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="15" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h6.5L18.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 13h7M8.5 16.5h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17.2 9.6 4.5 4.5 0 0 1 17 18.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-id" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.8 15.5c.6-1.4 1.6-2 2.7-2s2.1.6 2.7 2M14 10h4M14 13.5h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
   </svg>
 
   <header class="topbar">
@@ -110,6 +113,18 @@
           <option value="google-authorized">Google · authorized, matching account</option>
           <option value="google-mismatch">Google · authorized, different account</option>
         </optgroup>
+        <optgroup label="Google sign-in setup (one-time registration)">
+          <option value="google-setup-intro">Setup · introduction</option>
+          <option value="google-setup-storage-missing">Setup · Google sign-in helper missing</option>
+          <option value="google-setup-unavailable">Setup · status check failed</option>
+          <option value="google-setup-project">Setup · Google Cloud project</option>
+          <option value="google-setup-platform">Setup · app and Desktop client</option>
+          <option value="google-setup-import">Setup · client file</option>
+          <option value="google-setup-import-invalid">Setup · client file rejected</option>
+          <option value="google-setup-saving">Setup · saving</option>
+          <option value="google-setup-save-failed">Setup · save could not be confirmed</option>
+          <option value="google-setup-saved">Setup · saved</option>
+        </optgroup>
         <optgroup label="Review and connect">
           <option value="review-imap">Review · IMAP</option>
           <option value="review-google-remote">Review · Google on a remote installation</option>
@@ -143,6 +158,14 @@
       <input id="demo-host" type="text" data-demo="installation.host" placeholder="e.g. demo-host.example" autocomplete="off" spellcheck="false">
       <label class="check"><input type="checkbox" data-demo="installation.remote"><span>Remote installation (show host on review)</span></label>
       <label class="check"><input type="checkbox" data-demo="oauthClientConfigured"><span>Google OAuth client is configured</span></label>
+      <label class="check"><input type="checkbox" data-demo="googleHelperAvailable"><span>Google sign-in helper is installed</span></label>
+      <label class="field__label" for="demo-google-setup">Saving the Google registration returns</label>
+      <select id="demo-google-setup" data-demo="googleSetupOutcome">
+        <option value="saved">Saved (client ID returned)</option>
+        <option value="rejected">Rejected (not a usable Desktop app client)</option>
+        <option value="save-failed">Fails (protected storage refused the save)</option>
+        <option value="unconfirmed">Never answers (save cannot be confirmed)</option>
+      </select>
     </fieldset>
 
     <fieldset class="demo-group">
@@ -403,18 +426,171 @@
         <span class="actions__spacer"></span>
         <span data-slot="primary-actions" class="actions__group"></span>
       </div>
+    </div>
+  </template>
 
-      <section class="admin" data-slot="admin" hidden aria-labelledby="admin-title">
-        <h2 id="admin-title" class="admin__title"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Administrator setup</h2>
-        <p>This part is done once per installation, by whoever administers it. It is not part of adding a mailbox.</p>
-        <ol class="admin__steps">
-          <li>Configure a Google OAuth application with the Desktop app client type and enable Gmail access.</li>
-          <li>Use the setup service’s exact loopback callback address: <code data-slot="callback">…</code></li>
-          <li>Request the Gmail mail scope (read, send, and modify) so that Pimcamp can read, send, and watch for mail.</li>
-          <li>Install the client settings through the supported configuration flow. Some client types do not require a client secret.</li>
-        </ol>
-        <p class="field__hint">For a remote installation, forward the same loopback port over SSH. Keep the setup window and Google callback on that one address.</p>
-      </section>
+  <!-- One-time registration of this installation with Google. Separate from choosing a mailbox. -->
+  <template id="tpl-google-setup">
+    <div class="screen" data-screen="google-setup">
+      <p class="screen__eyebrow" data-slot="eyebrow">Google sign-in setup</p>
+      <h1 class="screen__title" tabindex="-1" data-slot="title"></h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <ol class="stepper" data-slot="stepper" aria-label="Setup parts" hidden></ol>
+      <p class="notice notice--demo" data-slot="demo-notice" hidden><span class="tag tag--demo">Demo</span><span>This result is simulated. Nothing was sent anywhere or saved.</span></p>
+      <div class="gsetup" data-slot="body"></div>
+      <div class="actions" data-slot="actions"></div>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-intro">
+    <div class="gsetup__part">
+      <div class="notice notice--warning notice--top" data-slot="storage" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">The Google sign-in helper is missing</p>
+          <p>This installation needs Ortie 2.2.0 to handle Google sign-in and renew access. Ask the agent or installation owner to install it and reopen setup with its path. You can follow the Google registration steps now, but cannot save the client file until the helper is available. Password storage is checked separately when saving.</p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="recheck-storage"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+        </div>
+      </div>
+      <ol class="guide" aria-label="What you will do">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Create a Google Cloud project and turn on Gmail</p>
+            <p class="guide__text">A project is the container Google uses for this registration. Turning on Gmail inside it lets the registration be used for mail.</p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-id"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Describe the app and create a Desktop app client</p>
+            <p class="guide__text">You name the registration, say who may use it, list the mail permission it asks for, and create a client. Google then offers a small file to download.</p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Bring that file back here</p>
+            <p class="guide__text">Pimcamp keeps the secret part in this installation’s protected storage and remembers only the public client ID. The file is never shown here.</p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>You’ll need a Google account that can sign in to Google Cloud console. It can be any account you control; it doesn’t have to be the mailbox you’re connecting. Everything happens on Google’s own pages, opened in a new tab. <span data-slot="keep"></span></span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-project">
+    <div class="gsetup__part">
+      <ol class="guide">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">1</span>
+          <div class="guide__body">
+            <p class="guide__title">Create a project, or pick one you already have</p>
+            <p class="guide__text">Sign in to Google Cloud console and create a project. Give it a name you’ll recognize later, such as Pimcamp. The organization and location fields can stay as Google suggests. If you already have a project for this, select it instead.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">Open project creation<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">2</span>
+          <div class="guide__body">
+            <p class="guide__title">Turn on the Gmail API for that project</p>
+            <p class="guide__text">With your project selected at the top of the page, open the Gmail API page and choose Enable. This tells Google the registration may be used for mail. It doesn’t give anyone access to a mailbox yet.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener noreferrer">Open the Gmail API page<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Nothing in this part connects a mailbox. Google asks for your consent for each mailbox later, back in Pimcamp. Choose Next once Gmail shows as enabled.</span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-platform">
+    <div class="gsetup__part">
+      <ol class="guide">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">1</span>
+          <div class="guide__body">
+            <p class="guide__title">Branding</p>
+            <p class="guide__text">In the same project, open Google Auth Platform. If Google asks you to get started, follow its short form; otherwise open Branding. Name the app (for example Pimcamp) and give a support email address you control. This is what Google’s consent page will show you later.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener noreferrer">Open Branding<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">2</span>
+          <div class="guide__body">
+            <p class="guide__title">Audience</p>
+            <p class="guide__text">Choose <strong>External</strong> for a personal @gmail.com address, or for any mailbox outside a Google Workspace organization you administer. Choose <strong>Internal</strong> only if you’re registering inside your own Workspace organization and every mailbox you’ll connect belongs to it.</p>
+            <div class="notice notice--warning">
+              <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+              <div class="notice__body">
+                <p class="notice__title">External apps start in Testing</p>
+                <p>Add the address of each mailbox you’ll connect under Test users, or Google will refuse the sign-in. While the app is in Testing, Google ends mail access after 7 days and you will need to reconnect the account. Publishing the app for longer-lived access is Google’s own process; Pimcamp can’t shorten or skip it.</p>
+                <p>If your organization restricts which apps may access mail, ask its administrator to allow this one rather than working around the policy.</p>
+              </div>
+            </div>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">3</span>
+          <div class="guide__body">
+            <p class="guide__title">Data access</p>
+            <p class="guide__text">Add the Gmail permission Pimcamp uses to read, send and watch mail. Choose Add or remove scopes and add <code>https://mail.google.com/</code>. Google describes it as reading, composing, sending and permanently deleting mail; Pimcamp only performs the mail actions you ask for.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener noreferrer">Open Data access<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">4</span>
+          <div class="guide__body">
+            <p class="guide__title">Create a Desktop app client</p>
+            <p class="guide__text">Open Clients and choose Create client. Set the application type to <strong>Desktop app</strong> and name it. When Google shows the new client, choose Download JSON and keep that file private; it’s what you bring back in the next part. A Desktop app client needs no redirect address.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Open Clients<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Never paste the file’s contents into chat, email or a shared document. In the next part you choose the file itself; its contents are sent only to this installation.</span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-import">
+    <form class="gsetup__part" id="gsetup-import-form" novalidate>
+      <div class="notice notice--warning notice--top" data-slot="storage" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">The Google sign-in helper is missing</p>
+          <p>Ask the agent or installation owner to install Ortie 2.2.0 and reopen setup with its path, then choose Check again. The file will not be sent while the helper is unavailable. An unlocked encrypted password vault is also required when saving.</p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="recheck-storage"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field__label" for="f-client-file">Client file from Google</label>
+        <p class="field__hint" id="f-client-file-hint">The JSON file Google offered when you created the Desktop app client. Its name starts with “client_secret” and it is usually in your Downloads folder.</p>
+        <input id="f-client-file" name="client-file" type="file" accept="application/json,.json" aria-describedby="f-client-file-hint">
+        <p class="filepick__meta" data-slot="file-meta" hidden><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span data-slot="file-name"></span></p>
+        <p class="field__error" id="f-client-file-error" hidden></p>
+      </div>
+      <div class="notice notice--danger notice--top" data-slot="save-error" hidden role="status">
+        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="notice__body">
+          <p class="notice__title" data-slot="save-error-title"></p>
+          <p data-slot="save-error-text"></p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="check-app-status"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check what was saved</button></div>
+        </div>
+      </div>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Pimcamp sends the file’s contents once to this installation. The installation checks that it describes a Desktop app client, keeps the secret part in protected storage, and remembers only the public client ID. Nothing from the file is shown here or kept in this browser.</span></p>
+    </form>
+  </template>
+
+  <template id="tpl-gsetup-saved">
+    <div class="gsetup__part">
+      <dl class="summary" data-slot="summary"></dl>
+      <div class="notice notice--warning" data-slot="refresh-note" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">Saved, but the setup page couldn’t be refreshed</p>
+          <p>The registration is stored. On the Google sign-in page, choose Check again so it picks up the new registration.</p>
+        </div>
+      </div>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>If the app is in Testing at Google, each mailbox’s access ends after 7 days and you will need to reconnect it. This registration stays saved. The downloaded JSON file also remains on your computer; keep it private or remove it yourself after importing.</span></p>
     </div>
   </template>
 

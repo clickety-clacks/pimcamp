@@ -30,8 +30,15 @@ try {
     });
   });
   const base = new URL(endpoint);
-  const pages = await (await fetch(`http://${base.host}/json/list`)).json();
-  socket = new WebSocket(pages.find(page => page.type === 'page').webSocketDebuggerUrl);
+  let page;
+  const pageDeadline = Date.now() + 10000;
+  while (!page && Date.now() < pageDeadline) {
+    const pages = await (await fetch(`http://${base.host}/json/list`)).json();
+    page = pages.find(candidate => candidate.type === 'page');
+    if (!page) await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(page, 'Chromium did not create its initial page');
+  socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((yes, no) => { socket.onopen = yes; socket.onerror = no; });
   let nextId = 0;
   const pending = new Map();
@@ -108,8 +115,35 @@ try {
       const accounts = await window.PimcampSetupService.listAccounts();
       if (accounts.length !== 1 || accounts[0].address !== 'browser-test@custom.example') throw Error('Account did not persist through real service');
       if (JSON.stringify(accounts).includes('fixture-browser-password')) throw Error('Account listing exposed password');
+      click('[data-action="add-account"]');
+      await waitFor(() => document.querySelector('[data-method="google"]'));
+      click('[data-method="google"]');
+      set('f-email', 'google-browser-test@example.com');
+      set('f-name', 'Preserve my Google draft');
+      document.querySelector('main form').requestSubmit();
+      const byText = text => Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === text);
+      await waitFor(() => byText('Set up Google sign-in'));
+      byText('Set up Google sign-in').click();
+      await waitFor(() => document.querySelector('[data-action="setup-next"]'));
+      for (let part = 0; part < 3; part++) click('[data-action="setup-next"]');
+      const input = document.querySelector('#f-client-file');
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([JSON.stringify({installed:{client_id:'123-live-browser.apps.googleusercontent.com',client_secret:'fixture-import-secret'}})],
+                                  'client_secret_fixture.json', {type:'application/json'}));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', {bubbles:true}));
+      document.querySelector('#gsetup-import-form').requestSubmit();
+      await waitFor(() => document.querySelector('[data-action="setup-continue-google"]'));
+      if (document.querySelector('main').textContent.includes('fixture-import-secret')) throw Error('Imported secret appeared in live summary');
+      const app = await window.PimcampSetupService.googleApplicationStatus();
+      if (!app.configured || app.clientId !== '123-live-browser.apps.googleusercontent.com') throw Error('Registration did not persist through HTTP');
+      if ((await window.PimcampSetupService.listAccounts()).length !== 1) throw Error('Registration changed existing accounts');
+      click('[data-action="setup-continue-google"]');
+      await waitFor(() => byText('Continue with Google'));
+      if (!document.querySelector('main').textContent.includes('google-browser-test@example.com')) throw Error('Live registration lost the email draft');
       return {ownerHandoff:true, realTransport:true, customAccountSaved:true, reviewRedacted:true,
-              cookieHttpOnly:true, partialObserverStatus:true, accountListingRedacted:true};
+              cookieHttpOnly:true, partialObserverStatus:true, accountListingRedacted:true,
+              googleRegistrationImport:true, googleRegistrationPreservesAccount:true, googleRegistrationReturnsToConsent:true};
     })()`);
     assert.deepEqual(errors, [], 'Uncaught live browser exceptions');
     await writeFile(join(output, 'live-fixture-results.json'), JSON.stringify(result, null, 2));
@@ -145,7 +179,7 @@ try {
           const offenders = await evaluate(`Array.from(document.querySelectorAll('main *')).filter(n => n.getBoundingClientRect().right > innerWidth).map(n => ({tag:n.tagName, class:n.className, right:n.getBoundingClientRect().right})).slice(0,12)`);
           layoutFailures.push({width, theme, state, offenders});
         }
-        if (process.env.PIMCAMP_REVIEW_SCREENSHOTS === '1' && width !== 320 && ['accounts-empty', 'imap', 'google-missing', 'connect-incoming-failed'].includes(state)) {
+        if (process.env.PIMCAMP_REVIEW_SCREENSHOTS === '1' && width !== 320 && ['accounts-empty', 'imap', 'google-missing', 'connect-incoming-failed', 'google-setup-intro', 'google-setup-platform', 'google-setup-import', 'google-setup-saved'].includes(state)) {
           const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
           await writeFile(join(output, `${width}-${theme}-${state}.png`), Buffer.from(shot.data, 'base64'));
         }
@@ -268,6 +302,83 @@ try {
   assert.equal(await evaluate('window.PimcampOnboardingPreview.state.screen'), 'review');
   assert.equal(await evaluate(`document.querySelector('main').textContent.includes('fixture-keyboard-password')`), false);
   journey.keyboardDetailsAndServers = true;
+  const registration = await evaluate(`(async () => {
+    const {state, demo, service, gallery} = window.PimcampOnboardingPreview;
+    const waitFor = async predicate => {
+      const deadline = Date.now() + 5000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw Error('Registration interaction timed out');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    const choose = text => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([text], 'client_secret_fixture.json', {type:'application/json'}));
+      const input = document.querySelector('#f-client-file');
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', {bubbles:true}));
+    };
+    gallery('google-setup-import');
+    const email = state.draft.email;
+    const raw = JSON.stringify({installed:{client_id:'123-browser.apps.googleusercontent.com',client_secret:'fixture-import-secret'}});
+    let submitted = 0;
+    const original = service.configureGoogleApplication;
+    service.configureGoogleApplication = async payload => {
+      submitted++;
+      if (payload.credentialsJson !== raw) throw Error('Imported file payload was lost or changed');
+      return original(payload);
+    };
+    choose('{"web":{}}');
+    document.querySelector('#gsetup-import-form').requestSubmit();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    if (submitted || !document.querySelector('#f-client-file[aria-invalid="true"]')) throw Error('Wrong client file not rejected locally');
+    choose(raw);
+    const form = document.querySelector('#gsetup-import-form');
+    form.requestSubmit(); form.requestSubmit();
+    await waitFor(() => state.googleSetup.step === 'saved' || state.googleSetup.error);
+    if (state.googleSetup.error) throw Error('Valid registration failed: ' + state.googleSetup.error.message);
+    await waitFor(() => document.querySelector('[data-action="setup-continue-google"]'));
+    if (submitted !== 1) throw Error('Duplicate registration submission');
+    if (document.querySelector('#f-client-file') || JSON.stringify(state).includes('fixture-import-secret') || document.querySelector('main').textContent.includes('fixture-import-secret')) throw Error('Imported secret retained or displayed');
+    if (state.draft.email !== email || state.connect.saved) throw Error('Registration changed the mailbox or falsely connected it');
+    document.querySelector('[data-action="setup-continue-google"]').click();
+    if (state.screen !== 'google' || !state.installation.oauthClientConfigured) throw Error('Did not return to usable Google sign-in');
+    service.configureGoogleApplication = original;
+    gallery('google-setup-import');
+    choose(raw);
+    document.querySelector('[data-action="setup-cancel"]').click();
+    if (document.querySelector('#f-client-file') || state.screen !== 'google') throw Error('Cancellation retained the file input');
+    const originalTimeout = window.setTimeout;
+    window.setTimeout = (callback, delay, ...args) => originalTimeout(callback, delay === 45000 ? 20 : delay, ...args);
+    try {
+      gallery('google-setup-import');
+      let release;
+      service.configureGoogleApplication = () => new Promise(resolve => { release = resolve; });
+      choose(raw);
+      document.querySelector('#gsetup-import-form').requestSubmit();
+      await waitFor(() => state.googleSetup.error);
+      if (state.googleSetup.submitting || state.googleSetup.error.kind !== 'unconfirmed') throw Error('Timeout left saving indefinitely or claimed no write');
+      release(await original({credentialsJson:raw}));
+      await waitFor(() => document.querySelector('[data-action="setup-continue-google"]'));
+      gallery('google-setup-import');
+      choose(raw);
+      document.querySelector('#gsetup-import-form').requestSubmit();
+      await waitFor(() => state.googleSetup.error);
+      const staleRelease = release;
+      document.querySelector('[data-action="setup-cancel"]').click();
+      gallery('google-setup-import');
+      staleRelease({configured:true, clientId:'stale.apps.googleusercontent.com'});
+      await new Promise(resolve => originalTimeout(resolve, 50));
+      if (state.googleSetup.step !== 'import' || state.googleSetup.app.clientId === 'stale.apps.googleusercontent.com') throw Error('Late save overwrote a newer screen');
+    } finally {
+      window.setTimeout = originalTimeout;
+      service.configureGoogleApplication = original;
+    }
+    return {registrationImport:true, registrationDuplicatePrevented:true, registrationSecretReleased:true,
+            registrationDraftPreserved:true, registrationCancellation:true, registrationTimeoutRecovers:true,
+            registrationLateSaveHandled:true, registrationStaleSaveIgnored:true};
+  })()`);
+  Object.assign(journey, registration);
   await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2));
   await writeFile(join(output, 'interaction-results.json'), JSON.stringify(journey, null, 2));
   await writeFile(join(output, 'layout-failures.json'), JSON.stringify(layoutFailures, null, 2));

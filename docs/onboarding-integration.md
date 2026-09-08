@@ -182,8 +182,24 @@ refresh has yet been verified.
 The launcher accepts `--google-client-id` and `--ortie`. An optional
 `--google-client-secret-command` points to an absolute installation-owned helper;
 the client secret itself must never be supplied as an argument. Without an
-application ID the UI presents the installation prerequisite, not a nonfunctional
-sign-in promise. The callback uses the same fixed loopback origin as setup.
+application ID the UI offers **Set up Google sign-in**: a guided registration at
+Google followed by a Desktop-client JSON import into persistent protected storage.
+The launcher reloads the saved registration automatically. The callback uses the
+same fixed loopback origin as setup.
+
+The guided flow was designed directly with Fable 5.1 on 2026-09-08. Verification:
+
+- Standard suite: 132 tests, 129 passed and 3 explicitly skipped (real IMAP APPEND,
+  credentialed adapter journey, and real account onboarding were not enabled).
+- Four transport lifecycle checks passed; 210 browser layout checks and 23
+  interaction checks passed, including timeout, late-success and stale-response recovery.
+- Ten browser-to-server fixture checks passed, including registration import,
+  preserving an existing account and returning to consent with the draft intact.
+- Isolated encrypted Secret Service import/restart/reload and actual Ortie 2.2.0
+  authorization-request construction passed using generated test values.
+- The separately invoked live adapter journey skipped for missing live environment
+  configuration. No real Google consent, token refresh or mailbox access is claimed
+  by these checks; no mail was sent.
 
 Keep account setup separate from the seven mail-operation request envelopes.
 Ship the setup UI with Pimcamp, backed by an owner-local setup boundary. Reuse

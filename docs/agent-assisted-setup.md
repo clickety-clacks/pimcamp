@@ -107,8 +107,13 @@ For a browser on another machine:
    alive while the user works. Google callbacks use this same origin/tunnel.
 
 Google additionally requires an installation-owned OAuth application and Ortie
-2.2.0. Configure the application before promising a working Google button; never
-assume the browser's current Google account is the desired email identity. See
+2.2.0. Install the helper first, passing its absolute path with `--ortie` when
+needed. If no application is configured, use **Set up Google sign-in** in the
+development UI to guide the user through Google's registration pages and import
+the downloaded Desktop-client JSON. Do not collect that file through chat or
+print its contents. Local registration save does not verify Google consent,
+provider-side settings, or an email account; continue to account sign-in after
+the save. Never assume the browser's current Google account is the desired email identity. See
 the [integration notes](onboarding-integration.md#google-integration-evidence).
 
 ## Recover without misleading the user

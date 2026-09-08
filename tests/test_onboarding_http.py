@@ -60,6 +60,27 @@ class SetupHTTPTests(unittest.TestCase):
         self.assertEqual(response, (200, []))
         self.service.list_accounts.assert_called_once_with()
 
+    def test_google_app_import_requires_owner_session_and_hides_raw_errors(self):
+        payload = {"action": "configureGoogleApplication", "credentialsJson": "fixture-secret-json"}
+        for header in ("Cookie", "Origin", "X-Pimcamp-CSRF", "Host"):
+            response, _ = self.request(payload=payload, headers={header: "wrong"})
+            self.assertEqual(response[0], 403)
+        self.service.configure_google_application.assert_not_called()
+        self.service.configure_google_application.return_value = {"configured": True, "clientId": "public-id"}
+        response, _ = self.request(payload=payload)
+        self.assertEqual(response, (200, {"configured": True, "clientId": "public-id"}))
+        self.service.configure_google_application.assert_called_once_with("fixture-secret-json")
+        self.service.configure_google_application.side_effect = OSError("fixture-secret-json")
+        response, _ = self.request(payload=payload)
+        self.assertEqual(response[0], 500)
+        self.assertNotIn("fixture-secret-json", str(response))
+
+    def test_google_application_status_is_an_authenticated_action(self):
+        self.service.google_application_status.return_value = {"configured": False, "helperAvailable": True}
+        response, _ = self.request(payload={"action": "googleApplicationStatus"})
+        self.assertEqual(response[0], 200)
+        self.service.google_application_status.assert_called_once_with()
+
     def test_oauth_callback_uses_provider_state_without_session_cookie(self):
         path = "/oauth/google/callback?state=fixture-state&code=fixture-code"
         response, extra = self.request(method="GET", path=path, headers={"Cookie": None, "Origin": None})

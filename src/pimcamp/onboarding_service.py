@@ -48,13 +48,15 @@ class SetupService:
                  himalaya: str, carillon: str, *, checker=check_himalaya_account,
                  runtime_config: Path | None = None, google_application=None,
                  oauth_callback="http://127.0.0.1:33281/oauth/google/callback",
-                 identity_reader=google_account_identity, remote_host_label: str | None = None):
+                 identity_reader=google_account_identity, remote_host_label: str | None = None,
+                 google_application_store=None):
         self.store, self.credentials = store, credentials
         self.state_root = state_root.absolute()
         self.himalaya, self.carillon = himalaya, carillon
         self.checker = checker
         self.runtime_config = runtime_config
         self.google_application = google_application
+        self.google_application_store = google_application_store
         self.oauth = OrtieAuthorization(google_application) if google_application else None
         self.oauth_callback = oauth_callback
         self.identity_reader = identity_reader
@@ -119,6 +121,26 @@ class SetupService:
 
     def list_accounts(self):
         return self.store.list_accounts()
+
+    def google_application_status(self):
+        if self.google_application:
+            return {"configured": True, "helperAvailable": True,
+                    "clientId": self.google_application.client_id}
+        return self.google_application_store.status() if self.google_application_store else {
+            "configured": False, "helperAvailable": False}
+
+    def configure_google_application(self, raw):
+        with self.lock:
+            if not self.google_application_store:
+                raise SetupError("Google app setup is not enabled by this launcher. Reopen the installed Pimcamp setup UI.")
+            if self.google_application and not self.google_application_store.path.exists():
+                raise SetupError("Google sign-in is configured by the installation owner. It was not replaced.")
+            if any(attempt.grant is not None for attempt in self.attempts.values()):
+                raise SetupError("Finish or cancel Google sign-in before changing app settings.")
+            application = self.google_application_store.configure(raw)
+            self.google_application = application
+            self.oauth = OrtieAuthorization(application)
+            return {"configured": True, "clientId": application.client_id}
 
     @staticmethod
     def _write_private(path, raw):

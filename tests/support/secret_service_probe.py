@@ -1,5 +1,6 @@
 """Explicit isolated Secret Service acceptance, using generated test values only."""
 import os
+import json
 from pathlib import Path
 import secrets
 import subprocess
@@ -9,7 +10,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
-from pimcamp.onboarding_credentials import SecretServiceCredentials
+from pimcamp.onboarding_credentials import SecretServiceCredentials, CredentialRef
+from pimcamp.onboarding_google_application import GoogleApplicationStore
+from pimcamp.onboarding_store import AccountStore
+from pimcamp.onboarding_oauth import OrtieAuthorization, render_ortie_account
 
 
 def probe(root):
@@ -55,6 +59,26 @@ def probe(root):
         invoke(store.write_command(reference), refreshed.encode())
         if invoke(store.command(reference)).decode() != refreshed:
             raise RuntimeError("Refresh write did not replace the owned token")
+        app_secret = secrets.token_urlsafe(32)
+        accounts = AccountStore(root / 'app-config')
+        ortie = os.environ.get('PIMCAMP_PROBE_ORTIE', '/bin/true')
+        registry = GoogleApplicationStore(accounts, store, ortie)
+        application = registry.configure(json.dumps({'installed': {
+            'client_id': 'isolated.apps.googleusercontent.com', 'client_secret': app_secret}}))
+        if invoke(application.secret_command).decode() != app_secret:
+            raise RuntimeError('Imported application secret was not readable through protected storage')
+        if app_secret in registry.path.read_text():
+            raise RuntimeError('Imported application secret appeared in configuration')
+        if os.environ.get('PIMCAMP_PROBE_ORTIE'):
+            callback = 'http://127.0.0.1:33281/oauth/google/callback'
+            config = root / 'ortie-import-check.toml'
+            config.write_bytes(render_ortie_account(application, 'import-check', callback,
+                store.command(reference), store.write_command(reference)))
+            config.chmod(0o600)
+            grant = OrtieAuthorization(application).begin(config, 'import-check', callback)
+            if not grant.authorization_url.startswith('https://accounts.google.com/'):
+                raise RuntimeError('Ortie did not return the expected authorization destination')
+            print('PASS: actual Ortie built a validated Google authorization request from the imported registration; no consent or provider request')
         stop(daemon)
         daemon = None
         keyrings = list((root / "data/keyrings").glob("*.keyring"))
@@ -62,18 +86,24 @@ def probe(root):
             raise RuntimeError("No persistent keyring file was created")
         for path in keyrings:
             raw = path.read_bytes()
-            if original.encode() in raw or refreshed.encode() in raw or unlock in raw:
+            if original.encode() in raw or refreshed.encode() in raw or unlock in raw or app_secret.encode() in raw:
                 raise RuntimeError("A generated test secret appeared unencrypted on disk")
         daemon = start()
         if invoke(store.command(reference)).decode() != refreshed:
             raise RuntimeError("Credential did not survive service restart and unlock")
+        restored = GoogleApplicationStore(accounts, store, ortie).load()
+        if invoke(restored.secret_command).decode() != app_secret:
+            raise RuntimeError('Imported application did not survive service restart and unlock')
+        app_reference = CredentialRef(**json.loads(registry.path.read_text())['secret_reference'])
+        if not store.remove(app_reference):
+            raise RuntimeError('Imported application test credential cleanup failed')
         if not store.remove(reference):
             raise RuntimeError("Could not remove the isolated test item")
         result = subprocess.run(store.command(reference), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 stdin=subprocess.DEVNULL, timeout=15, check=False)
         if result.returncode == 0 or result.stdout:
             raise RuntimeError("Removed test item remained readable")
-        print("PASS: protected create/read, refresh write, encrypted file check, service restart/unlock, removal")
+        print("PASS: protected create/read, refresh write, encrypted file check, Google app import/reload, service restart/unlock, removal")
     finally:
         stop(daemon)
 

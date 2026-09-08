@@ -19,6 +19,7 @@ from pimcamp.onboarding_http import SetupHTTPServer
 from pimcamp.onboarding_service import SetupService, SetupError
 from pimcamp.onboarding_store import AccountStore
 from pimcamp.onboarding_oauth import GoogleApplication, OAuthSetupError
+from pimcamp.onboarding_google_application import GoogleApplicationStore
 
 
 def main():
@@ -69,11 +70,19 @@ def main():
             parser.error(str(error))
     elif args.google_client_secret_command:
         parser.error("Provide --google-client-id with the application secret helper.")
-    service = SetupService(AccountStore(args.config_root), credentials,
+    account_store = AccountStore(args.config_root)
+    application_store = GoogleApplicationStore(account_store, credentials, args.ortie)
+    if application is None:
+        try:
+            application = application_store.load()
+        except OAuthSetupError as error:
+            parser.error(str(error))
+    service = SetupService(account_store, credentials,
                            args.state_root, args.himalaya, args.carillon,
                            runtime_config=args.runtime_config.absolute(), google_application=application,
                            oauth_callback=f"http://127.0.0.1:{args.port}/oauth/google/callback",
-                           remote_host_label=args.remote_host_label)
+                           remote_host_label=args.remote_host_label,
+                           google_application_store=application_store)
     try:
         server = SetupHTTPServer(service, ROOT / "ui/onboarding", args.launch_directory, port=args.port)
     except OSError:

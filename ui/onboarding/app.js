@@ -78,10 +78,14 @@
     accountsScenario: 'empty',
     installation: { host: '', remote: false },
     oauthClientConfigured: true,
+    googleHelperAvailable: true,
+    googleSetupOutcome: 'saved',
     googleOutcome: 'authorized',
     outcomes: { incoming: 'pass', outgoing: 'pass', save: 'pass', observe: 'pass' },
   });
   const demo = DEMO_DEFAULTS();
+  // Public identifier only. Fixtures never hold a client secret or an imported client file.
+  const DEMO_CLIENT_ID = '000000000000-demo.apps.googleusercontent.com';
 
   function fixtureAccounts(scenario) {
     const connected = {
@@ -150,6 +154,23 @@
     return errors;
   }
 
+  /**
+   * Preflight for a Google client file. Looks only at the shape, returns a
+   * user-facing message, and never echoes any value from the file. The
+   * installation validates again before storing anything.
+   */
+  function inspectClientJson(text) {
+    const notClient = 'That file isn’t a Google client file. Choose the JSON file Google offered when you created the Desktop app client.';
+    let data;
+    try { data = JSON.parse(text); } catch (_) { return { ok: false, code: 'not-json', message: notClient }; }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, code: 'not-json', message: notClient };
+    if ('web' in data) return { ok: false, code: 'web-client', message: 'This file describes a Web application client. Pimcamp needs a Desktop app client. Go back a part, create one, and download its file.' };
+    const c = data.installed;
+    if (!c || typeof c !== 'object') return { ok: false, code: 'not-client', message: notClient };
+    if (typeof c.client_id !== 'string' || !/^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$/.test(c.client_id) || typeof c.client_secret !== 'string' || !c.client_secret || c.client_secret.length > 4096 || c.client_secret.includes('\0')) return { ok: false, code: 'incomplete', message: 'This file is missing the client details Pimcamp needs. Download the client file again from Google Auth Platform and choose that one.' };
+    return { ok: true, clientId: c.client_id.trim() };
+  }
+
   /* ---------------------------------------------------------------------
    * 4. Service boundary
    *    The real implementation talks to the onboarding service. Every
@@ -157,11 +178,40 @@
    * ------------------------------------------------------------------- */
   function createDemoService(settings) {
     let accounts = [];
+    let configuredClientId = null; // public identifier only; set when the demo "saves" a registration
     const lat = (f) => Math.max(0, Number(settings.latency) || 0) * f;
+    const publicError = (message) => { const e = new Error(message); e.publicMessage = message; return e; };
 
     const api = {
       isDemo: true,
-      reset() { accounts = fixtureAccounts(settings.accountsScenario); },
+      reset() { accounts = fixtureAccounts(settings.accountsScenario); configuredClientId = null; },
+
+      /** { configured, helperAvailable, clientId? }. clientId is Google's public identifier; no secret is ever returned. */
+      async googleApplicationStatus() {
+        await delay(lat(0.4));
+        const configured = !!settings.oauthClientConfigured;
+        const status = { configured, helperAvailable: settings.googleHelperAvailable !== false };
+        if (configured) status.clientId = configuredClientId || DEMO_CLIENT_ID;
+        return status;
+      },
+
+      /**
+       * Validates the shape of a Desktop app client file and "stores" it. The text is
+       * inspected and dropped; only the public client ID is remembered. Any failure is
+       * thrown with a user-facing message, so the caller treats it as not confirmed.
+       */
+      async configureGoogleApplication({ credentialsJson }) {
+        await delay(lat(1.2));
+        const check = inspectClientJson(credentialsJson);
+        if (!check.ok) throw publicError(check.message);
+        if (settings.googleSetupOutcome === 'unconfirmed') await new Promise(() => {}); // never settles; the presentation's timeout takes over
+        if (settings.googleSetupOutcome === 'rejected') throw publicError('This file doesn’t describe a Desktop app client this installation can use. Download the client file again from Google Auth Platform and choose that one.');
+        if (settings.googleSetupOutcome === 'save-failed') throw publicError('The installation’s protected storage refused to save the registration. Nothing was changed. Try again; if it keeps failing, the storage may be locked.');
+        settings.oauthClientConfigured = true;
+        settings.googleHelperAvailable = true;
+        configuredClientId = check.clientId;
+        return { configured: true, clientId: check.clientId };
+      },
 
       async listAccounts() { await delay(lat(0.4)); return accounts.map(a => ({ ...a })); },
 
@@ -263,7 +313,18 @@
     { key: 'review', label: 'Review' },
     { key: 'connect', label: 'Connect' },
   ];
-  const STEP_OF = { choose: 0, details: 1, imap: 2, google: 2, review: 3, connect: 4, done: 5 };
+  const STEP_OF = { choose: 0, details: 1, imap: 2, google: 2, 'google-setup': 2, review: 3, connect: 4, done: 5 };
+
+  /* Parts of the one-time Google registration. The intro and the saved summary sit outside the count. */
+  const GSETUP_PARTS = [
+    { key: 'project', label: 'Google Cloud project' },
+    { key: 'platform', label: 'App and client' },
+    { key: 'import', label: 'Client file' },
+  ];
+  const GSETUP_ORDER = ['intro', 'project', 'platform', 'import', 'saved'];
+  function newGoogleSetup() {
+    return { step: 'intro', app: null, statusError: null, submitting: false, error: null, token: null, refreshFailed: false, alreadyConfigured: false };
+  }
 
   function newDraft() {
     return {
@@ -289,6 +350,7 @@
     draft: newDraft(),
     oauth: { status: 'idle', identity: null, controller: null },
     connect: newChecks(),
+    googleSetup: newGoogleSetup(), // one-time registration of this installation with Google
     busy: {}, // per-account busy flags
   };
 
@@ -297,6 +359,7 @@
 
   function go(screen, { focus = true } = {}) {
     if (state.oauth.controller) { state.oauth.controller.abort(); state.oauth.controller = null; if (state.oauth.status === 'in-progress') state.oauth.status = 'idle'; }
+    if (state.screen === 'google-setup' && screen !== 'google-setup') leaveGoogleSetup();
     state.screen = screen;
     render({ focus });
   }
@@ -307,6 +370,7 @@
       case 'choose': return 'accounts';
       case 'details': return d.reconnectId ? 'accounts' : 'choose';
       case 'imap': case 'google': return d.reconnectId ? 'accounts' : 'details';
+      case 'google-setup': return 'google';
       case 'review': return d.method === 'google' ? 'google' : 'imap';
       case 'connect': return 'review';
       default: return 'accounts';
@@ -363,7 +427,11 @@
     const h = $('.screen__title', stage);
     if (h) { h.focus({ preventScroll: false }); }
     const step = STEP_OF[state.screen];
-    if (typeof step === 'number' && step < STEPS.length) announce(`${titleFor()}. Step ${step + 1} of ${STEPS.length}.`);
+    if (state.screen === 'google-setup') {
+      const i = GSETUP_PARTS.findIndex(p => p.key === state.googleSetup.step);
+      announce(`${titleFor()}. Google sign-in setup${i >= 0 ? `, part ${i + 1} of ${GSETUP_PARTS.length}` : ''}.`);
+    }
+    else if (typeof step === 'number' && step < STEPS.length) announce(`${titleFor()}. Step ${step + 1} of ${STEPS.length}.`);
     else announce(titleFor());
   }
   function renderLoading(text) {
@@ -386,7 +454,7 @@
     if (state.screen === 'accounts') { rail.append(tpl('tpl-rail-intro')); return; }
     const n = tpl('tpl-rail-steps');
     const current = STEP_OF[state.screen];
-    slot(n, 'eyebrow').textContent = state.draft.reconnectId ? 'Reconnect account' : 'Add account';
+    slot(n, 'eyebrow').textContent = state.screen === 'google-setup' ? 'Set up Google sign-in' : state.draft.reconnectId ? 'Reconnect account' : 'Add account';
     const list = slot(n, 'steps');
     STEPS.forEach((s, i) => {
       const st = i < current ? 'done' : i === current ? 'current' : 'todo';
@@ -617,7 +685,6 @@
 
     const panel = slot(n, 'state');
     const actions = slot(n, 'primary-actions');
-    const admin = slot(n, 'admin');
     const email = d.email;
     const s = state.oauth;
 
@@ -663,20 +730,18 @@
           `Google reported that the administrator for ${domainOf(email) || 'this domain'} hasn’t approved Pimcamp for ${email}. Ask your Google Workspace administrator to allow it, then try again. If your organization permits app passwords, IMAP & SMTP is an alternative.`));
         actions.append(useImap(), primary('Try again', beginOAuth, 'refresh'));
         break;
-      case 'missing-client':
+      case 'missing-client': {
+        const started = state.googleSetup.step !== 'intro';
+        const guided = typeof service.googleApplicationStatus === 'function' && typeof service.configureGoogleApplication === 'function';
         panel.append(head('warning', 'lock', 'Google sign-in isn’t set up on this installation yet',
-          'Someone who administers this installation needs to register Pimcamp with Google once. Until then, Google accounts can’t be connected here. If your provider allows app passwords, IMAP & SMTP works now.'));
-        actions.append(useImap(), secondary('Check again', async () => {
-          renderLoading('Checking installation…');
-          try {
-            const setup = await service.beginSetup();
-            state.installation = setup.installation;
-            go('google');
-          } catch (error) { showServiceError(error); }
-        }));
-        admin.hidden = false;
-        slot(admin, 'callback').textContent = callbackUrl();
+          'Before any Google account can be connected here, this copy of Pimcamp has to be registered with Google once. That takes about ten minutes on Google’s own pages, and it is separate from choosing which mailbox to connect.'));
+        panel.append(el('p', { class: 'panel__text', text: guided
+          ? (started ? `You’ve already started this. Your details for ${email} are kept while you finish.` : `Your details for ${email} are kept while you do it. If your provider allows app passwords, IMAP & SMTP works without this step.`)
+          : 'Guided setup isn’t available from this version of account setup. Whoever administers the installation can register the app through its supported configuration, then choose Check again. If your provider allows app passwords, IMAP & SMTP works now.' }));
+        actions.append(useImap(), secondary('Check again', recheckInstallation));
+        if (guided) actions.append(primary(started ? 'Continue setting up Google sign-in' : 'Set up Google sign-in', startGoogleSetup, 'arrow-right'));
         break;
+      }
       case 'authorized': {
         const match = s.identity.toLowerCase() === email.toLowerCase();
         if (match) {
@@ -710,10 +775,15 @@
     slot(root, 'state').after(nt);
   }
 
-  function callbackUrl() {
-    if (!service.isDemo) return state.installation.oauthCallback || 'Callback not supplied by this installation';
-    const origin = (location.origin && location.origin !== 'null') ? location.origin : 'http://<setup-host>:<setup-port>';
-    return `${origin}/oauth/google/callback`;
+  /** Re-reads installation facts for the current setup attempt (a reconnect keeps its account id). */
+  async function refreshInstallation() {
+    const setup = await boundedSetupRequest(service.beginSetup(state.draft.reconnectId || undefined));
+    state.installation = setup.installation;
+  }
+  async function recheckInstallation() {
+    renderLoading('Checking installation…');
+    try { await refreshInstallation(); go('google'); }
+    catch (error) { showServiceError(error); }
   }
 
   async function beginOAuth() {
@@ -746,6 +816,393 @@
     if (c) { state.oauth.controller = null; c.abort(); }
     state.oauth = { status: 'cancelled', identity: null, byUser: true, controller: null };
     render();
+  }
+
+  /* ---------- Google sign-in setup: one-time registration of this installation with Google ----------
+   * Separate from choosing a mailbox. Registration happens on Google's own pages (opened in a new
+   * tab); here the user only reads guidance and, at the end, picks the client file Google offered.
+   * The file's text exists in JS only between "Save" and the service's answer, and is never shown. */
+  const GSETUP_TIMEOUT = 45000;
+  async function boundedSetupRequest(request) {
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('Setup did not answer'), {
+          publicMessage: 'Account setup did not answer in time. Your saved account is unchanged; check the connection and try again.'
+        })), GSETUP_TIMEOUT);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+  const GSETUP_COPY = {
+    intro: {
+      title: 'Set up Google sign-in for this installation',
+      lede: 'Before any Google account can be connected here, Google needs to know about this copy of Pimcamp. You do this once, on Google’s own pages, in about ten minutes. It is not the same as choosing which mailbox to connect; that comes afterwards.',
+    },
+    project: {
+      title: 'Create a Google Cloud project and turn on Gmail',
+      lede: 'Sign in to Google Cloud console with any Google account you control. A project is just the container Google uses for this registration.',
+    },
+    platform: {
+      title: 'Describe the app and create its client',
+      lede: 'In the same project, open Google Auth Platform. Google asks four things; take them in order. Nothing here touches a mailbox yet.',
+    },
+    import: {
+      title: 'Bring the client file to this installation',
+      lede: 'Choose the file Google offered to download. Pimcamp sends it once to this installation, which checks it, keeps the secret part in protected storage, and remembers only the public client ID.',
+    },
+    saved: {
+      title: 'Google sign-in is set up on this installation',
+      lede: () => (state.googleSetup.alreadyConfigured
+        ? 'This installation already has a registration saved, so there is nothing more to set up here. No Google account is connected yet; that happens on Google’s site when you choose Continue with Google.'
+        : 'Pimcamp saved the registration. No Google account is connected yet; that happens on Google’s site when you choose Continue with Google.'),
+    },
+  };
+
+  function normalizeApp(app) {
+    return {
+      configured: !!(app && app.configured),
+      helperAvailable: !!(app && app.helperAvailable === true),
+      clientId: app && typeof app.clientId === 'string' && app.clientId ? app.clientId : null,
+    };
+  }
+  const formatSize = (bytes) => bytes < 1024 ? `${bytes} bytes` : `${Math.round(bytes / 1024)} KB`;
+
+  /** Entry from the Google screen. Re-reads the installation's registration status every time. */
+  function startGoogleSetup() {
+    const gs = state.googleSetup;
+    gs.app = null; gs.statusError = null; gs.error = null; gs.refreshFailed = false; gs.alreadyConfigured = false;
+    go('google-setup');
+  }
+  /** Called by go() when navigating anywhere else. The file input leaves with the screen; the draft stays. */
+  function leaveGoogleSetup() {
+    const gs = state.googleSetup;
+    gs.token = null; gs.submitting = false; gs.error = null; gs.statusError = null;
+  }
+
+  const gsBackBtn = () => btn('Back', { kind: 'ghost', iconName: 'arrow-left', 'data-action': 'setup-back', onclick: setupBack });
+  const gsCancelBtn = () => btn('Cancel', { kind: 'ghost', 'data-action': 'setup-cancel', onclick: () => go('google') });
+  const gsNextBtn = (label = 'Next') => btn(label, { kind: 'primary', iconName: 'arrow-right', 'data-action': 'setup-next', onclick: setupNext });
+  const gsSaveBtn = () => btn(state.installation.remote && state.installation.host ? `Save on ${state.installation.host}` : 'Save to this installation',
+    { kind: 'primary', type: 'submit', form: 'gsetup-import-form', 'data-action': 'setup-save' });
+
+  async function renderGoogleSetup({ focus = true } = {}) {
+    const gs = state.googleSetup;
+    if (!gs.app && !gs.statusError) {
+      renderLoading('Checking this installation…');
+      try {
+        const app = normalizeApp(await boundedSetupRequest(service.googleApplicationStatus()));
+        if (state.screen !== 'google-setup') return;
+        gs.app = app;
+        if (app.configured) {
+          gs.step = 'saved'; gs.alreadyConfigured = true;
+          if (!state.installation.oauthClientConfigured) { try { await refreshInstallation(); } catch (_) { gs.refreshFailed = true; } }
+          if (state.screen !== 'google-setup') return;
+        }
+      } catch (error) {
+        if (state.screen !== 'google-setup') return;
+        gs.statusError = error.publicMessage || 'Could not reach account setup. Check that it is still running, then retry.';
+      }
+      stage.replaceChildren();
+    }
+
+    const n = tpl('tpl-google-setup');
+    const title = slot(n, 'title'), lede = slot(n, 'lede'), body = slot(n, 'body'), actions = slot(n, 'actions');
+
+    if (gs.statusError) {
+      title.textContent = 'Couldn’t check this installation';
+      lede.textContent = gs.statusError;
+      body.append(el('p', { class: 'help' }, [icon('info'), el('span', { text: 'Nothing was changed and your account details are kept. Try again, or go back to the Google sign-in page.' })]));
+      actions.append(gsBackBtn(), btn('Try again', { kind: 'primary', iconName: 'refresh', onclick: startGoogleSetup }));
+      stage.append(n); afterRender(focus);
+      if (focus) alertNow(gs.statusError);
+      return;
+    }
+
+    const step = gs.step;
+    const copy = GSETUP_COPY[step];
+    title.textContent = copy.title;
+    lede.textContent = typeof copy.lede === 'function' ? copy.lede() : copy.lede;
+    if (step !== 'intro') renderStepper(slot(n, 'stepper'), step);
+    slot(n, 'demo-notice').hidden = !(service.isDemo && (step === 'saved' || gs.error));
+
+    switch (step) {
+      case 'intro': {
+        const part = tpl('tpl-gsetup-intro');
+        slot(part, 'storage').hidden = gs.app.helperAvailable;
+        slot(part, 'keep').textContent = state.draft.email ? `Your details for ${state.draft.email} are kept while you do this.` : '';
+        bindRecheckStorage(part);
+        body.append(part);
+        actions.append(gsBackBtn(), gsNextBtn('Start'));
+        break;
+      }
+      case 'project': body.append(tpl('tpl-gsetup-project')); actions.append(gsBackBtn(), gsCancelBtn(), gsNextBtn()); break;
+      case 'platform': body.append(tpl('tpl-gsetup-platform')); actions.append(gsBackBtn(), gsCancelBtn(), gsNextBtn()); break;
+      case 'import': renderImportPart(body); buildImportActions(actions); break;
+      case 'saved': renderSavedPart(body, actions); break;
+    }
+    stage.append(n);
+    afterRender(focus);
+  }
+
+  function renderStepper(list, step) {
+    list.hidden = false;
+    const idx = step === 'saved' ? GSETUP_PARTS.length : GSETUP_PARTS.findIndex(p => p.key === step);
+    GSETUP_PARTS.forEach((p, i) => {
+      const st = i < idx ? 'done' : i === idx ? 'current' : 'todo';
+      list.append(el('li', { class: 'stepper__item', 'data-state': st, 'aria-current': st === 'current' ? 'step' : null }, [
+        el('span', { class: 'stepper__bar', 'aria-hidden': 'true' }),
+        el('span', { class: 'stepper__label' }, [
+          st === 'done' ? icon('check') : null,
+          el('span', { text: `${i + 1}. ${p.label}` }),
+          el('span', { class: 'visually-hidden', text: st === 'done' ? ' (completed)' : st === 'current' ? ' (current part)' : '' }),
+        ]),
+      ]));
+    });
+  }
+
+  function setupBack() {
+    const gs = state.googleSetup;
+    if (gs.submitting) return;
+    const i = GSETUP_ORDER.indexOf(gs.step);
+    if (gs.statusError || i <= 0) { go('google'); return; }
+    gs.error = null;
+    gs.step = GSETUP_ORDER[i - 1];
+    render();
+  }
+  function setupNext() {
+    const gs = state.googleSetup;
+    const i = GSETUP_ORDER.indexOf(gs.step);
+    if (i < 0 || GSETUP_ORDER[i + 1] === undefined || GSETUP_ORDER[i + 1] === 'saved') return; // saving goes through the form
+    gs.error = null;
+    gs.step = GSETUP_ORDER[i + 1];
+    render();
+  }
+
+  /** "Check again" inside the storage notice. Updates in place so a chosen file is not lost. */
+  function bindRecheckStorage(root) {
+    const button = $('[data-action="recheck-storage"]', root);
+    if (!button) return;
+    const idle = () => { button.disabled = false; button.replaceChildren(icon('refresh'), 'Check again'); };
+    button.addEventListener('click', async () => {
+      const gs = state.googleSetup;
+      if (gs.submitting) return;
+      button.disabled = true; button.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Checking…');
+      announce('Checking the Google sign-in helper…');
+      try {
+        const app = normalizeApp(await boundedSetupRequest(service.googleApplicationStatus()));
+        if (state.screen !== 'google-setup') return;
+        gs.app = app;
+        if (app.configured && gs.step !== 'saved') {
+          gs.step = 'saved'; gs.alreadyConfigured = true; gs.error = null;
+          try { await refreshInstallation(); } catch (_) { gs.refreshFailed = true; }
+          if (state.screen === 'google-setup') render();
+          return;
+        }
+        if (app.helperAvailable) {
+          slot(root, 'storage').hidden = true;
+          announce('The Google sign-in helper is available. Password storage will be checked when saving.');
+          const next = $('#f-client-file', root) || $('[data-action="setup-next"]', stage);
+          if (next) next.focus();
+        } else { idle(); alertNow('The Google sign-in helper still isn’t available. Nothing was sent.'); }
+      } catch (error) {
+        if (state.screen !== 'google-setup') return;
+        idle(); alertNow(error.publicMessage || 'Could not reach account setup to check. Try again in a moment.');
+      }
+    });
+  }
+
+  function renderImportPart(body) {
+    const gs = state.googleSetup;
+    const part = tpl('tpl-gsetup-import');
+    slot(part, 'storage').hidden = gs.app.helperAvailable;
+    bindRecheckStorage(part);
+    const input = $('#f-client-file', part);
+    const meta = slot(part, 'file-meta');
+    input.disabled = gs.submitting;
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      meta.hidden = !f;
+      if (f) slot(part, 'file-name').textContent = `${f.name} · ${formatSize(f.size)}`;
+      clearErrors(part);
+    });
+    $('[data-action="check-app-status"]', part).addEventListener('click', checkAppStatus);
+    renderSaveError(part);
+    part.addEventListener('submit', (e) => { e.preventDefault(); submitClientFile(part); });
+    body.append(part);
+  }
+  function buildImportActions(actions) {
+    const gs = state.googleSetup;
+    actions.replaceChildren();
+    if (gs.submitting) {
+      actions.append(
+        el('span', { class: 'help' }, [icon('lock'), 'Saving to protected storage. This only takes a moment and can’t be cancelled.']),
+        el('button', { type: 'button', class: 'btn btn--primary', disabled: true }, [el('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Saving…']),
+      );
+    } else {
+      actions.append(gsBackBtn(), gsCancelBtn(), gsSaveBtn());
+    }
+  }
+  /** Updates the import part in place (busy state, error notice) so the chosen file survives a failed attempt. */
+  function refreshImportChrome() {
+    if (state.screen !== 'google-setup') return;
+    const n = $('[data-screen="google-setup"]', stage);
+    const form = n && $('#gsetup-import-form', n);
+    if (!form) return;
+    const gs = state.googleSetup;
+    $('#f-client-file', form).disabled = gs.submitting;
+    renderSaveError(form);
+    buildImportActions(slot(n, 'actions'));
+    slot(n, 'demo-notice').hidden = !(service.isDemo && gs.error);
+  }
+  function renderSaveError(form) {
+    const gs = state.googleSetup;
+    const box = slot(form, 'save-error');
+    if (!gs.error) { box.hidden = true; return; }
+    const unconfirmed = gs.error.kind === 'unconfirmed';
+    slot(form, 'save-error-title').textContent = unconfirmed ? 'Saving could not be confirmed' : 'The registration wasn’t saved';
+    slot(form, 'save-error-text').textContent = `${gs.error.message} ${unconfirmed
+      ? 'Check what the installation has saved before trying again.'
+      : 'You can choose the file again and retry, or check what the installation has saved.'}`;
+    box.hidden = false;
+  }
+
+  async function submitClientFile(form) {
+    const gs = state.googleSetup;
+    if (gs.submitting) return;
+    const input = $('#f-client-file', form);
+    const file = input.files && input.files[0];
+    clearErrors(form);
+    if (!file) { applyErrors(form, { 'f-client-file': 'Choose the client file first. It’s usually in your Downloads folder and its name starts with “client_secret”.' }); return; }
+    if (file.size > 32 * 1024) { applyErrors(form, { 'f-client-file': 'That file is too large to be a Google client file. Choose the JSON file Google offered when you created the Desktop app client.' }); return; }
+
+    if (!gs.app.helperAvailable) {
+      // Recheck the helper before refusing; protected storage is checked separately on save.
+      try { gs.app = normalizeApp(await boundedSetupRequest(service.googleApplicationStatus())); } catch (_) { /* keep the last known state */ }
+      if (state.screen !== 'google-setup') return;
+      if (!gs.app.helperAvailable) {
+        slot(form, 'storage').hidden = false;
+        alertNow('The Google sign-in helper is missing, so the file wasn’t sent. Choose Check again after it is installed.');
+        $('[data-action="recheck-storage"]', form).focus();
+        return;
+      }
+      slot(form, 'storage').hidden = true;
+    }
+
+    // Claim the attempt before asynchronous file reading so double-submit cannot race.
+    if (gs.submitting) return;
+    gs.submitting = true;
+    refreshImportChrome();
+    let text;
+    try { text = await file.text(); }
+    catch (_) { gs.submitting = false; refreshImportChrome(); applyErrors(form, { 'f-client-file': 'Pimcamp couldn’t read that file. Choose it again.' }); return; }
+    if (state.screen !== 'google-setup' || state.googleSetup !== gs || !gs.submitting) { text = null; return; }
+    const check = inspectClientJson(text);
+    if (!check.ok) { text = null; gs.submitting = false; refreshImportChrome(); applyErrors(form, { 'f-client-file': check.message }); return; }
+
+    const token = {};
+    gs.token = token; gs.submitting = true; gs.error = null;
+    refreshImportChrome();
+    announce('Saving the registration to this installation…');
+
+    // The request keeps running past the timeout; a late answer is still applied if this attempt is current.
+    let settled = false;
+    let request;
+    try { request = Promise.resolve(service.configureGoogleApplication({ credentialsJson: text })); }
+    catch (error) { request = Promise.reject(error); }
+    request = request.finally(() => { settled = true; });
+    text = null;
+    const timeout = new Promise((_, reject) => setTimeout(() => { if (!settled) { const e = new Error('Timed out'); e.name = 'TimeoutError'; reject(e); } }, GSETUP_TIMEOUT));
+    let result, failure = null;
+    try { result = await Promise.race([request, timeout]); }
+    catch (error) { failure = error; }
+
+    if (failure && failure.name === 'TimeoutError') {
+      request.then(late => { if (gs.token === token && !gs.submitting) finishConfigure(token, late, null); }, () => { /* the visible state already says unconfirmed */ });
+    }
+    finishConfigure(token, result, failure);
+  }
+
+  /** Applies the outcome of one save attempt. `token` identifies it; stale answers are ignored. */
+  async function finishConfigure(token, result, failure) {
+    const gs = state.googleSetup;
+    const current = gs.token === token;
+    if (!current) return;
+    if (!failure && result && result.configured === true) {
+      gs.submitting = false; gs.error = null; gs.step = 'saved'; gs.refreshFailed = false; gs.alreadyConfigured = false;
+      gs.app = { configured: true, helperAvailable: true, clientId: typeof result.clientId === 'string' && result.clientId ? result.clientId : null };
+      if (service.isDemo) syncDemoControls();
+      if (!current || state.screen !== 'google-setup') return; // the user moved on; "Check again" on the Google screen picks this up
+      renderLoading('Saved. Refreshing setup…'); // drops the file input straight away
+      try { await refreshInstallation(); } catch (_) { gs.refreshFailed = true; }
+      if (gs.token !== token || state.screen !== 'google-setup') return;
+      gs.token = null;
+      render();
+      announce('The registration is saved on this installation. No Google account is connected yet.');
+      return;
+    }
+    if (!current) return;
+    gs.submitting = false;
+    if (failure && failure.name === 'TimeoutError') {
+      gs.error = { kind: 'unconfirmed', message: 'The installation didn’t confirm the save within a minute. It may still be finishing, or the request was lost.' };
+    } else if (failure) {
+      gs.error = { kind: 'unconfirmed', message: failure.publicMessage || 'The connection ended before the installation confirmed the save.' };
+    } else {
+      gs.error = { kind: 'unconfirmed', message: 'The installation answered without confirming that the registration was saved.' };
+    }
+    refreshImportChrome();
+    alertNow(`${gs.error.kind === 'unconfirmed' ? 'Saving could not be confirmed' : 'The registration wasn’t saved'}. ${gs.error.message}`);
+    const retry = $('[data-action="setup-save"]', stage);
+    if (retry) retry.focus();
+  }
+
+  /** "Check what was saved": asks the installation instead of guessing after an unconfirmed attempt. */
+  async function checkAppStatus(event) {
+    const gs = state.googleSetup;
+    if (gs.submitting) return;
+    const button = event && event.currentTarget;
+    if (button) { button.disabled = true; button.replaceChildren(el('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Checking…'); }
+    announce('Checking what this installation has saved…');
+    let app = null, message = null;
+    try { app = normalizeApp(await boundedSetupRequest(service.googleApplicationStatus())); }
+    catch (error) { message = error.publicMessage || 'Could not reach account setup to check. Try again in a moment.'; }
+    if (state.screen !== 'google-setup') return;
+    if (button) { button.disabled = false; button.replaceChildren(icon('refresh'), 'Check what was saved'); }
+    if (app && app.configured) {
+      gs.app = app; gs.error = null; gs.step = 'saved'; gs.alreadyConfigured = false;
+      if (service.isDemo) syncDemoControls();
+      renderLoading('Saved. Refreshing setup…');
+      try { await refreshInstallation(); } catch (_) { gs.refreshFailed = true; }
+      if (state.screen !== 'google-setup') return;
+      render();
+      announce('The registration is saved on this installation.');
+      return;
+    }
+    if (app) { gs.app = app; message = 'This installation has no Google registration saved yet. Choose the file and save again.'; }
+    gs.error = { kind: gs.error ? gs.error.kind : 'save', message };
+    refreshImportChrome();
+    alertNow(message);
+  }
+
+  function renderSavedPart(body, actions) {
+    const gs = state.googleSetup;
+    const part = tpl('tpl-gsetup-saved');
+    const dl = slot(part, 'summary');
+    const row = (t, v, small, mono) => {
+      const r = tpl('tpl-summary-row'); slot(r, 'term').textContent = t;
+      const dd = slot(r, 'value');
+      if (mono) dd.append(el('code', { text: v })); else dd.textContent = v;
+      if (small) dd.append(el('small', { text: small }));
+      dl.append(r);
+    };
+    const where = state.installation.remote ? (state.installation.host || 'the remote installation') : 'this installation';
+    row('Registration', `${gs.alreadyConfigured ? 'Already saved' : 'Saved'} on ${where}`, 'Shared by every Google account connected through it.');
+    if (gs.app.clientId) row('Client ID', gs.app.clientId, 'Google’s public identifier for this registration. It isn’t a secret.', true);
+    else row('Client ID', 'Not reported by the installation');
+    row('Client secret', 'In protected storage', 'Never shown here and not kept in this browser.');
+    row('Google account', 'Not connected yet', state.draft.email ? `Next, you approve access for ${state.draft.email} on Google’s site.` : 'Next, you approve access on Google’s site.');
+    slot(part, 'refresh-note').hidden = !gs.refreshFailed;
+    body.append(part);
+    actions.append(btn('Continue to Google sign-in', { kind: 'primary', iconName: 'arrow-right', 'data-action': 'setup-continue-google', onclick: () => go('google') }));
   }
 
   /* ---------- Review ---------- */
@@ -1011,7 +1468,7 @@
     });
   }
 
-  const SCREENS = { accounts: renderAccounts, choose: renderChoose, details: renderDetails, imap: renderImap, google: renderGoogle, review: renderReview, connect: renderConnect, done: renderDone };
+  const SCREENS = { accounts: renderAccounts, choose: renderChoose, details: renderDetails, imap: renderImap, google: renderGoogle, 'google-setup': renderGoogleSetup, review: renderReview, connect: renderConnect, done: renderDone };
 
   /* ---------------------------------------------------------------------
    * 7. Demo panel, gallery, theme, global actions, init
@@ -1049,11 +1506,16 @@
       state.installation = { host: demo.installation.host.trim() || null, remote: !!demo.installation.remote, oauthClientConfigured: !!demo.oauthClientConfigured };
       if (state.screen === 'google' || state.screen === 'review') render({ focus: false });
     }
+    if (key === 'googleHelperAvailable' && state.screen === 'google-setup' && state.googleSetup.app) {
+      state.googleSetup.app.helperAvailable = !!demo.googleHelperAvailable;
+      if (!state.googleSetup.submitting) render({ focus: false });
+    }
   });
   $('[data-action="demo-reset"]').addEventListener('click', () => {
     Object.assign(demo, DEMO_DEFAULTS());
     syncDemoControls(); service.reset();
     state.accountsLoaded = false; state.draft = newDraft(); state.oauth = { status: 'idle', identity: null, controller: null }; state.connect = newChecks();
+    state.googleSetup = newGoogleSetup();
     state.installation = { host: null, remote: false, oauthClientConfigured: true };
     go('accounts'); announce('Demo reset.');
   });
@@ -1076,7 +1538,17 @@
     state.installation = { host: demo.installation.host.trim() || null, remote: !!demo.installation.remote, oauthClientConfigured: true };
     state.oauth = { status: 'idle', identity: null, controller: null };
     state.connect = newChecks();
+    state.googleSetup = newGoogleSetup();
     const imapErrors = () => { const d = state.draft; d.incoming.host = 'imaps://imap.example.com'; d.incoming.port = '99999'; d.incoming.password = ''; d.outgoing.host = ''; };
+    // Google sign-in setup states: the installation has no client yet; the status call is already answered.
+    const gsetup = (step, { helper = true, configured = false, clientId = null } = {}) => {
+      state.draft = sampleDraft('google');
+      state.installation.oauthClientConfigured = configured; demo.oauthClientConfigured = configured;
+      demo.googleHelperAvailable = helper; syncDemoControls();
+      const gs = state.googleSetup;
+      gs.step = step; gs.app = { configured, helperAvailable: helper, clientId };
+      return gs;
+    };
     switch (key) {
       case 'accounts-empty': demo.accountsScenario = 'empty'; syncDemoControls(); service.reset(); state.accountsLoaded = false; go('accounts'); break;
       case 'accounts-list': demo.accountsScenario = 'both'; syncDemoControls(); service.reset(); state.accountsLoaded = false; go('accounts'); break;
@@ -1094,6 +1566,16 @@
       case 'google-denied': state.draft = sampleDraft('google'); state.oauth = { status: 'denied-policy', identity: null, controller: null }; go('google'); break;
       case 'google-authorized': state.draft = sampleDraft('google'); state.oauth = { status: 'authorized', identity: 'demo@example.com', controller: null }; go('google'); break;
       case 'google-mismatch': state.draft = sampleDraft('google'); state.oauth = { status: 'authorized', identity: 'different.person@example.com', controller: null }; go('google'); break;
+      case 'google-setup-intro': gsetup('intro'); go('google-setup'); break;
+      case 'google-setup-storage-missing': gsetup('import', { helper: false }); go('google-setup'); break;
+      case 'google-setup-unavailable': { const gs = gsetup('intro'); gs.app = null; gs.statusError = 'Could not reach account setup. Check that it is still running, then retry.'; go('google-setup'); break; }
+      case 'google-setup-project': gsetup('project'); go('google-setup'); break;
+      case 'google-setup-platform': gsetup('platform'); go('google-setup'); break;
+      case 'google-setup-import': gsetup('import'); go('google-setup'); break;
+      case 'google-setup-import-invalid': { gsetup('import'); go('google-setup'); const form = $('#gsetup-import-form', stage); if (form) applyErrors(form, { 'f-client-file': inspectClientJson('{"web":{}}').message }); break; }
+      case 'google-setup-saving': { const gs = gsetup('import'); gs.submitting = true; gs.token = {}; go('google-setup'); break; }
+      case 'google-setup-save-failed': { const gs = gsetup('import'); gs.error = { kind: 'unconfirmed', message: 'The installation didn’t confirm the save. It may still be finishing, or the request was lost.' }; go('google-setup'); break; }
+      case 'google-setup-saved': gsetup('saved', { configured: true, clientId: DEMO_CLIENT_ID }); go('google-setup'); break;
       case 'review-imap': state.draft = sampleDraft('imap'); go('review'); break;
       case 'review-google-remote': state.draft = sampleDraft('google'); state.draft.google.identity = 'demo@example.com'; state.installation = { host: demo.installation.host.trim() || 'demo-host.example', remote: true, oauthClientConfigured: true }; go('review'); break;
       case 'connect-checking': state.draft = sampleDraft('imap'); go('connect'); runConnect(); break;

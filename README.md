@@ -41,8 +41,12 @@ through `secret-tool`, not into configuration files. A headless installation
 also needs a working, unlocked Secret Service provider; installing the utility
 alone does not provide one. No test email is sent during setup.
 
-Google requires an installation-owned OAuth application and Ortie 2.2.0. Without
-those prerequisites, the UI explains what is missing. See the
+Google requires an installation-owned OAuth application and Ortie 2.2.0. The
+development UI's **Set up Google sign-in** flow guides project/client registration
+at Google, securely imports the downloaded Desktop-client JSON, and returns to
+account sign-in. Install Ortie first (or supply its absolute path with `--ortie`).
+The imported secret is stored in the encrypted vault; the registration is loaded
+automatically on subsequent setup launches. See the [flow specification](docs/google-registration-flow.md) and
 [integration notes](docs/onboarding-integration.md) for application options and
 the remaining verification work. Opening the HTML file directly is only a demo;
 use `pimcamp-setup` to configure a real account.
