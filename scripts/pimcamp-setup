@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Launch the owner-local Pimcamp account setup UI on one stable port."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import resource
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from pimcamp.onboarding_credentials import KeyringCredentials, SecretServiceCredentials
+from pimcamp.onboarding_http import SetupHTTPServer
+from pimcamp.onboarding_service import SetupService, SetupError
+from pimcamp.onboarding_store import AccountStore
+from pimcamp.onboarding_oauth import GoogleApplication, OAuthSetupError
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    config_base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    state_base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    runtime_base = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    parser.add_argument("--config-root", type=Path, default=config_base / "pimcamp/onboarding")
+    parser.add_argument("--runtime-config", type=Path, default=config_base / "pimcamp/config.json",
+                        help="Select the first connected account here; preserve an existing configuration")
+    parser.add_argument("--state-root", type=Path, default=state_base / "pimcamp/accounts")
+    parser.add_argument("--launch-directory", type=Path, default=runtime_base / "pimcamp-setup")
+    parser.add_argument("--himalaya", default=shutil.which("himalaya"))
+    parser.add_argument("--carillon", default=shutil.which("carillon") or "/usr/bin/carillon")
+    parser.add_argument("--port", type=int, default=33281)
+    parser.add_argument("--remote-host-label", help="Show which mail host is being configured when the browser connects through an SSH tunnel")
+    parser.add_argument("--google-client-id", help="Installation-owned Google Desktop OAuth application ID; not an email address")
+    parser.add_argument("--ortie", default=shutil.which("ortie"), help="Absolute path to Ortie 2.2.0 for Google authorization and refresh")
+    parser.add_argument("--google-client-secret-command", type=Path,
+                        help="Absolute path to an installation-owned helper that reads the OAuth application secret")
+    parser.add_argument("--credential-backend", choices=("secret-service", "linux-keyring"), default="secret-service",
+                        help="Desktop keyring by default; linux-keyring is explicitly volatile across reboot")
+    parser.add_argument("--no-open", action="store_true", help="Report the private launch-file path without opening a browser")
+    args = parser.parse_args()
+    if not args.himalaya:
+        parser.error("Himalaya 2.1.0 is required; install it or supply --himalaya with its absolute path.")
+    if not 1 <= args.port <= 65535:
+        parser.error("Choose a port from 1 to 65535. Setup never falls back to a random port.")
+    if not Path(args.himalaya).is_absolute() or not Path(args.carillon).is_absolute():
+        parser.error("Tool paths must be absolute.")
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    if args.credential_backend == "secret-service":
+        secret_tool = shutil.which("secret-tool")
+        if not secret_tool:
+            parser.error("Install libsecret's secret-tool and a Secret Service keyring. No plaintext or volatile fallback was selected.")
+        credentials = SecretServiceCredentials(secret_tool)
+    else:
+        credentials = KeyringCredentials(str(ROOT / "scripts/pimcamp-keyctl-read"), str(ROOT / "scripts/pimcamp-keyctl-write"))
+    application = None
+    if args.google_client_id:
+        if not args.ortie:
+            parser.error("Google authorization requires Ortie; install it or provide --ortie.")
+        try:
+            application = GoogleApplication(args.google_client_id, args.ortie,
+                (str(args.google_client_secret_command),) if args.google_client_secret_command else None)
+        except OAuthSetupError as error:
+            parser.error(str(error))
+    elif args.google_client_secret_command:
+        parser.error("Provide --google-client-id with the application secret helper.")
+    service = SetupService(AccountStore(args.config_root), credentials,
+                           args.state_root, args.himalaya, args.carillon,
+                           runtime_config=args.runtime_config.absolute(), google_application=application,
+                           oauth_callback=f"http://127.0.0.1:{args.port}/oauth/google/callback",
+                           remote_host_label=args.remote_host_label)
+    try:
+        server = SetupHTTPServer(service, ROOT / "ui/onboarding", args.launch_directory, port=args.port)
+    except OSError:
+        parser.error(f"Could not listen on 127.0.0.1:{args.port}. Check the existing setup process; the port was not changed.")
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
+    print(json.dumps({"url": server.origin, "launch_file": str(server.launch_file),
+                      "note": "Open the private launch file to authorize this browser. No token is included in this output."}), flush=True)
+    try:
+        if not args.no_open:
+            subprocess.Popen(["xdg-open", str(server.launch_file)], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        for setup_id in list(service.attempts):
+            try:
+                service.cancel(setup_id)
+            except SetupError:
+                print("Temporary setup credentials could not be cleared; inspect the setup process before retrying.", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

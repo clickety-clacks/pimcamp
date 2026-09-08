@@ -5,8 +5,47 @@ agents, and scripts. It gives these clients one structured seam instead of
 making them depend on a specific command-line tool, provider, or email
 protocol.
 
-Pimcamp is not an email app. It does not provide a user interface, a sync
-engine, a search index, or a general email automation platform.
+Pimcamp is not an email app. It does not provide a mailbox user interface, a
+sync engine, a search index, or a general email automation platform.
+
+A generic account setup UI is included in this development tree and its installer;
+it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
+and [integration requirements](docs/onboarding-integration.md). This setup UI
+configures the stack; mailbox viewers and composers remain independent clients.
+
+The [design preview](ui/onboarding/index.html) can be opened directly from a
+local checkout. It uses clearly labeled demo data and never connects or saves
+an email account. Its [design notes](ui/onboarding/DESIGN.md) describe the screens
+and integration boundary. Run `node tests/browser_onboarding.mjs ui/onboarding`
+with Node and Chromium installed for the optional browser layout checks.
+
+### Install the development candidate
+
+Requires Linux and Python 3.12 or newer. From the checkout:
+
+```sh
+python3 scripts/install --version onboarding-candidate
+~/.local/bin/pimcamp-setup
+```
+
+The installer includes the HTML/CSS, setup backend, and credential helpers. It
+does not install dependencies, change account data, or overwrite an existing
+release directory. Choose a new version name for a subsequent candidate.
+Himalaya 2.1.0 and Carillon 0.1.0 must be installed separately; supply their
+absolute paths with `--himalaya` and `--carillon` if they are not on PATH.
+
+Setup opens an authenticated browser session on the fixed loopback port 33281.
+IMAP & SMTP accepts your email address, editable server settings, and shared or
+separate login credentials. Passwords go to an unlocked Secret Service keyring
+through `secret-tool`, not into configuration files. A headless installation
+also needs a working, unlocked Secret Service provider; installing the utility
+alone does not provide one. No test email is sent during setup.
+
+Google requires an installation-owned OAuth application and Ortie 2.2.0. Without
+those prerequisites, the UI explains what is missing. See the
+[integration notes](docs/onboarding-integration.md) for application options and
+the remaining verification work. Opening the HTML file directly is only a demo;
+use `pimcamp-setup` to configure a real account.
 
 ## Where Pimcamp fits
 

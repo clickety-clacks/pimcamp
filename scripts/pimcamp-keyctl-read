@@ -1,0 +1,144 @@
+#!/usr/bin/python3 -I
+"""Write one approved Pimcamp credential entry to a non-terminal stdout."""
+
+import fcntl
+import os
+import resource
+import subprocess
+import sys
+
+
+KEYCTL = "/usr/bin/keyctl"
+def entry_description(entry):
+    """Opaque account/revision IDs scope each secret; labels never become keys."""
+    import re
+    if not isinstance(entry, str) or not re.fullmatch(
+        r"account:[a-f0-9]{64}:(imap|smtp|oauth|client)", entry
+    ):
+        raise ValueError("unsupported entry name")
+    return "pimcamp-" + entry
+
+
+class HelperError(Exception):
+    pass
+
+
+def fail(message):
+    os.write(2, ("pimcamp-keyctl-read: " + message + "\n").encode("ascii"))
+    raise SystemExit(1)
+
+
+def secure_process():
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.environ.clear()
+    os.environ.update({"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
+
+
+def parse_args(argv):
+    if argv == ["--help"]:
+        os.write(
+            1,
+            b"usage: pimcamp-keyctl-read [--keyring @u|SERIAL] "
+            b"account:SHA256:imap|smtp|oauth|client\n",
+        )
+        raise SystemExit(0)
+    keyring = "@u"
+    if len(argv) == 3 and argv[0] == "--keyring":
+        keyring, entry = argv[1], argv[2]
+    elif len(argv) == 1:
+        entry = argv[0]
+    else:
+        fail("invalid arguments")
+    try:
+        entry_description(entry)
+    except ValueError:
+        fail("unsupported entry name")
+    if keyring != "@u" and (not keyring.isascii() or not keyring.isdecimal()):
+        fail("invalid keyring identifier")
+    if keyring != "@u" and int(keyring) <= 0:
+        fail("invalid keyring identifier")
+    return keyring, entry
+
+
+def run_keyctl(arguments):
+    try:
+        result = subprocess.run(
+            [KEYCTL, *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise HelperError from error
+    if result.returncode != 0:
+        raise HelperError
+    return result.stdout
+
+
+def parse_serial(raw):
+    value = raw.strip()
+    if not value.isascii() or not value.isdigit() or int(value) <= 0:
+        raise HelperError
+    return value.decode("ascii")
+
+
+def matching_serials(keyring, description):
+    raw_ids = run_keyctl(["rlist", keyring])
+    matches = []
+    for raw_id in raw_ids.split():
+        serial = parse_serial(raw_id)
+        raw_description = run_keyctl(["rdescribe", serial])
+        try:
+            fields = raw_description.rstrip(b"\n").decode("utf-8").split(";", 4)
+        except UnicodeDecodeError as error:
+            raise HelperError from error
+        if len(fields) != 5:
+            raise HelperError
+        if fields[0] == "user" and fields[4] == description:
+            matches.append(serial)
+    return matches
+
+
+def acquire_lock():
+    helper_directory = os.path.dirname(os.path.realpath(__file__))
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(helper_directory, flags)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError:
+        fail("cannot acquire the helper lock")
+    return descriptor
+
+
+def main():
+    secure_process()
+    keyring, entry = parse_args(sys.argv[1:])
+    if os.isatty(1):
+        fail("refusing secret output to a terminal")
+    lock_descriptor = acquire_lock()
+    try:
+        matches = matching_serials(keyring, entry_description(entry))
+        if len(matches) != 1:
+            raise HelperError
+        serial = matches[0]
+    except HelperError:
+        fail("keyring operation failed closed")
+    finally:
+        os.close(lock_descriptor)
+    try:
+        os.execve(
+            KEYCTL,
+            [KEYCTL, "pipe", serial],
+            {"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+    except OSError:
+        fail("keyring operation failed closed")
+
+
+if __name__ == "__main__":
+    main()

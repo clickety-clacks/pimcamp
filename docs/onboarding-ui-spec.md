@@ -1,7 +1,8 @@
 # Pimcamp account onboarding UI
 
-Status: implementation brief, 2026-09-04. Owner: Pimcamp PO.
+Status: implementation brief, 2026-09-04. Owner: Mike's direct Codex session.
 Design implementer requested by Mike: Claude 5.1; do not substitute silently.
+Claude is commissioned directly, not through Tightbeam. Codex owns integration.
 
 ## Product objective
 
