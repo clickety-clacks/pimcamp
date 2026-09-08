@@ -88,6 +88,14 @@ Its independent reviewed-clean verdict is
 
 ## Runtime
 
+Agents operating email through Pimcamp should install the
+[Pimcamp skill](skills/pimcamp/SKILL.md). Copy the `skills/pimcamp` directory
+into the agent's skill directory (for example `~/.codex/skills/pimcamp` or
+`~/.claude/skills/pimcamp`). The skill describes the public operations,
+credential handling, pagination, mutation retries, and notification semantics.
+Keep deployment hosts, account identities, and credential-helper paths in your
+own environment/topology documentation; they are not part of the reusable skill.
+
 See [runtime installation](docs/runtime-installation.md) for release layout,
 dependency and credential requirements, and
 [Racter acceptance](docs/racter-runtime-acceptance.md) for the verified real-mail
