@@ -922,8 +922,8 @@
         updateRow('observe', o.state, o.message);
       }
       finishConnect();
-      announce(c.rows.observe.state === 'passed' ? 'All steps passed. Choose Continue.' : 'Settings saved. Mail watching is not ready; choose Continue to see what’s left.');
-      const cont = $('.btn--primary', stage); if (cont) cont.focus();
+      go('done');
+      announce('Account connected. Setup is complete.' + (c.rows.observe.state === 'passed' ? '' : ' New-mail notifications have not been verified.'));
     } catch (e) {
       if (isAbort(e)) {
         for (const k of Object.keys(c.rows)) if (c.rows[k].state === 'checking') c.rows[k] = { state: 'waiting', message: '' };
@@ -948,28 +948,26 @@
     const observe = state.connect.rows.observe;
     const partial = observe.state !== 'passed';
     const where = state.installation.remote ? (state.installation.host || 'the remote installation') : 'this installation';
-    slot(n, 'title').textContent = partial ? 'Account connected, with one thing left' : 'Account connected';
+    slot(n, 'title').textContent = 'Account connected';
     slot(n, 'lede').textContent = `${d.email} is ready. Pimcamp saved the settings on ${where}${d.reconnectId ? ' and updated the existing account' : ''}.`;
-    if (partial) slot(n, 'art').dataset.tone = 'warning';
 
     const caps = slot(n, 'caps');
     const cap = (label, ready, stateText, desc) => {
       const r = tpl('tpl-cap-row'); r.dataset.state = ready ? 'ready' : 'unavailable';
       slot(r, 'label').textContent = label;
-      const st = slot(r, 'state'); st.dataset.tone = ready ? 'success' : 'warning'; st.textContent = stateText;
+      const st = slot(r, 'state'); st.dataset.tone = ready ? 'success' : ''; st.textContent = stateText;
       slot(r, 'desc').textContent = desc; caps.append(r);
     };
     cap('Read mail', true, 'Ready', 'Pimcamp can list and open messages in this mailbox.');
     cap('Send mail', true, 'Ready', 'Pimcamp can send on your behalf. It only sends when you ask it to.');
-    cap('Notice new mail', !partial, partial ? 'Not yet' : 'Ready', partial ? observe.message : 'Pimcamp reacts to new messages as they arrive.');
+    cap('New-mail notifications', !partial, partial ? 'Not tested' : 'Ready', partial ? 'Setup is complete. Automatic notifications have not been tested.' : 'Pimcamp reacts to new messages as they arrive.');
 
     if (partial) {
       const rem = slot(n, 'remaining'); rem.hidden = false;
       const body = el('div', { class: 'notice__body' }, [el('p', { class: 'notice__title', text: observe.state === 'unavailable' ? 'New-mail notifications are not verified yet' : 'Mail watching didn’t start' }),
-        el('p', { text: observe.message || 'Reading and sending have separate connection checks. Check mail watching before relying on new-mail notifications.' })]);
+        el('p', { text: observe.state === 'unavailable' ? 'Your account is saved and setup is complete. Nothing is still running. Notification verification is a separate step; you can return to your accounts now.' : observe.message || 'Your account is saved. Notification verification is a separate step.' })]);
       const act = el('div', { class: 'check-row__actions' });
       if (observe.state === 'failed') act.append(btn('Try again', { size: 'small', iconName: 'refresh', onclick: async () => { go('connect', { focus: false }); await runConnect({ retry: true }); } }));
-      else act.append(btn('Check again', { size: 'small', iconName: 'refresh', onclick: async () => { go('connect', { focus: false }); state.connect.rows.observe = { state: 'waiting', message: '' }; await runConnect({ retry: true }); } }));
       body.append(act);
       rem.append(icon('alert'), body);
     }

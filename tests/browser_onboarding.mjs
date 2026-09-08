@@ -101,8 +101,8 @@ try {
       if (!document.querySelector('[data-screen="review"]')) throw Error('No review screen');
       if (document.querySelector('main').textContent.includes('fixture-browser-password')) throw Error('Password appeared in summary');
       click('[data-action="connect"]');
-      await waitFor(() => document.querySelector('.check-row[data-key="save"][data-state="passed"]'));
-      await waitFor(() => document.querySelector('.check-row[data-key="observe"][data-state="unavailable"]'));
+      await waitFor(() => document.querySelector('[data-screen="done"]'));
+      if (!document.querySelector('main').textContent.includes('Not tested')) throw Error('Notification status missing');
       const cookieVisible = document.cookie.includes('pimcamp_setup');
       if (cookieVisible) throw Error('Session cookie is readable by JavaScript');
       const accounts = await window.PimcampSetupService.listAccounts();
@@ -205,6 +205,8 @@ try {
     await waitFor(() => !state.connect.running);
     if (commits !== 1 || !state.connect.saved) throw Error('Duplicate submission or missing save');
     if (state.connect.rows.observe.state !== 'unavailable') throw Error('Watcher unavailability hidden');
+    if (state.screen !== 'done' || document.querySelector('h1').textContent !== 'Account connected') throw Error('Saved account did not finish clearly');
+    if (document.querySelector('main .notice--warning')) throw Error('Untested notifications look like failed setup');
     if (state.draft.incoming.password || state.draft.outgoing.password) throw Error('Passwords retained after save');
     service.commitAccount = originalCommit;
     gallery('details');
@@ -226,11 +228,15 @@ try {
     if (!document.querySelector('main').textContent.includes('Saving could not be confirmed')) throw Error('Save uncertainty hidden');
     gallery('done-partial');
     if (!document.querySelector('main').textContent.includes('New-mail notifications are not verified yet')) throw Error('Unverified watcher shown as missing');
+    gallery('connect-observe-unavailable');
+    for (const spinner of document.querySelectorAll('main .spinner')) {
+      if (getComputedStyle(spinner).display !== 'none' || getComputedStyle(spinner).animationName !== 'none') throw Error('Completed check still spins');
+    }
     return { validationFocus:true, customAccount:true, customPortPreserved:true,
              reviewRedacted:true, rejectedCredentialsNotSaved:true,
              duplicateSubmitPrevented:true, partialStatusVisible:true, passwordsReleased:true,
              backPreservesDetails:true, checkFailureRecoverable:true, saveUncertaintyVisible:true,
-             watcherStatusTruthful:true };
+             watcherStatusTruthful:true, completedChecksStopSpinning:true, savedAccountFinishesAutomatically:true };
   })()`);
   assert.deepEqual(errors, [], 'Uncaught browser exceptions');
   // Exercise real browser keyboard events, not just JS click/requestSubmit.

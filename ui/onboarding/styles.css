@@ -703,6 +703,7 @@ input:disabled, select:disabled { opacity: 0.6; }
   animation: spin 0.8s linear infinite;
 }
 .spinner--lg { width: 30px; height: 30px; border-width: 3px; color: var(--accent-text); }
+.check-row:not([data-state="checking"]) .icon--checking { display: none; animation: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .screen--loading {
@@ -731,7 +732,7 @@ input:disabled, select:disabled { opacity: 0.6; }
 .cap__icon > * { display: none; width: 15px; height: 15px; }
 .cap[data-state="ready"] .cap__icon { background: var(--success-soft); color: var(--success); }
 .cap[data-state="ready"] .icon--passed { display: block; }
-.cap[data-state="unavailable"] .cap__icon { background: var(--warning-soft); color: var(--warning); }
+.cap[data-state="unavailable"] .cap__icon { background: var(--surface); color: var(--text-muted); }
 .cap[data-state="unavailable"] .icon--unavailable { display: block; }
 .cap__body { display: grid; gap: 2px; min-width: 0; }
 .cap__label { font-weight: 600; }
