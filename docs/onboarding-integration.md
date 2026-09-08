@@ -143,6 +143,21 @@ status. This run exposed and fixed revision containment checks when a store's
 parent directory is a legitimate symlink. A new regression test passed on Racter.
 The fixture server was stopped after verification; it used no real mail or keys.
 
+### Gibson candidate deployment (2026-09-08)
+
+Candidate commit `e00d9dcd1693ed2402af2e9bf60c13c4e3037251` was installed
+using its included installer on the authorized production target. Both the mail
+CLI and setup launcher now resolve to the candidate release, and the installed
+setup command's help invocation succeeded. The earlier v0.1.0 release remains
+intact. Installation did not copy credentials, configure a mailbox, or send mail.
+
+The host's Secret Service returned no default collection. A persistent operator
+terminal is awaiting a new encrypted-storage password before account setup can
+save credentials. This is not evidence of an onboarded production mailbox or
+unattended keyring unlock. The active test mailbox remains unchanged. Deployment
+paths and operator identity belong in the private environment runbook, not in
+the reusable UI or agent skill.
+
 ### Google integration evidence
 
 The authorization adapter targets Ortie 2.2.0. Its supported `auth get --json`
