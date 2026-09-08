@@ -47,6 +47,21 @@ those prerequisites, the UI explains what is missing. See the
 the remaining verification work. Opening the HTML file directly is only a demo;
 use `pimcamp-setup` to configure a real account.
 
+### Agents setting up Pimcamp for a user
+
+Follow the [agent-assisted setup guide](docs/agent-assisted-setup.md). It covers
+installation checks, encrypted password storage, opening the **live HTML UI**
+locally or through SSH, user handoffs, expired setup attempts, and verification.
+Run the setup commands for the user; ask them only for private input or provider
+consent. Do not ask for passwords in chat or substitute the demo HTML preview.
+
+A **password vault** (called a keyring on Linux) keeps email passwords and tokens
+encrypted on the mail host. A new vault needs a new password chosen by the user;
+an existing vault needs its existing password. This is separate from an email
+password and may be required again after restart. Explain this **before** any
+prompt. Headless vault creation/unlock is still an installation prerequisite,
+not an implemented screen in the included HTML UI.
+
 ## Where Pimcamp fits
 
 ```mermaid

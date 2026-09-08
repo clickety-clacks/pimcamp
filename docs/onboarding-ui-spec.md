@@ -12,6 +12,26 @@ Pimcamp owns the integrating UI. Himalaya owns protocol operations; the installe
 
 ## Scope and screens
 
+### Password-storage prerequisite copy (2026-09-08 clarification)
+
+Before requesting email credentials, explain any missing encrypted-storage
+prerequisite in ordinary language. A vault/keyring stores email passwords and
+tokens on the mail host; its unlock password is separate from the provider's
+password. Distinguish **creating** a vault (choose and confirm a new password)
+from **unlocking** one (enter the existing password). Explain password-manager
+storage, possible unlock after restart, and the consequence of losing access.
+State that programs under the same OS user may access credentials while unlocked.
+Use the copy in [agent-assisted setup](agent-assisted-setup.md#explain-password-storage-before-prompting).
+
+The current implementation delegates this to installation setup; it is not yet
+an HTML screen. The intended integrated UI must explain and handle the supported
+storage prerequisite before email setup, without creating competing services or
+reporting success solely from a helper exit code. Existing vaults must never be
+reset or overwritten. This remains a visible implementation gap, not completed
+UI functionality.
+
+### Email account screens
+
 1. Accounts / welcome: empty state titled “Connect your email”, brief explanation of what Pimcamp enables, primary “Add account”. Existing accounts show address, optional display name, connection status, and “Check connection” / “Reconnect”. Never silently replace an existing account.
 2. Choose connection: “Google / Gmail” and “IMAP & SMTP”. Explain that Google Workspace custom domains use the Google option. Namecheap may be an optional preset within IMAP settings, never a top-level product identity. No speculative unsupported provider buttons.
 3. Account details: user-entered “Email address” with example alex@example.com; optional “Account name” used only locally. Accept @ and . in account names. Do not infer the account being installed from the operator, current browser session, or test fixture.
