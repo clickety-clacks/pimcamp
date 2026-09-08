@@ -201,6 +201,8 @@ class SetupHandler(BaseHTTPRequestHandler):
                 result = service.check(request.get("setupId"), request.get("draft"), "imap" if action == "checkIncoming" else "smtp")
             elif action == "commitAccount":
                 result = service.commit(request.get("setupId"), request.get("draft"))
+            elif action == "saveStatus":
+                result = service.save_status(request.get("setupId"), request.get("draft"))
             elif action == "observationReadiness":
                 result = service.observation(request.get("accountId"))
             elif action == "checkAccount":
@@ -211,7 +213,12 @@ class SetupHandler(BaseHTTPRequestHandler):
         except SetupValidationError as error:
             self.reply(400, {"error": {"message": str(error), "fields": error.fields}})
         except (SetupError, AccountStoreError, CredentialError, OAuthSetupError) as error:
-            self.reply(400, {"error": {"message": str(error)}})
+            detail = {"message": str(error)}
+            if isinstance(error, SetupError) and error.code:
+                detail["code"] = error.code
+            elif isinstance(error, CredentialError):
+                detail["code"] = "credential_storage"
+            self.reply(400, {"error": detail})
         except (ValueError, TypeError):
             self.reply(400, {"error": {"message": "Check the account settings and try again."}})
         except Exception:

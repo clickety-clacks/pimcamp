@@ -25,7 +25,10 @@ Never ask them to paste passwords, OAuth codes, or tokens into chat.
    files or the explicitly volatile Linux-keyring test backend.
 4. Launch `pimcamp-setup`, not `ui/onboarding/index.html`. The latter is a labeled
    demonstration and cannot configure email. Use the remote procedure below
-   when the browser is not on the mail host.
+   when the browser is not on the mail host. Inspect the existing setup process,
+   browser handoff and tunnel first; reuse them instead of opening competing
+   forms. Never change ports as a workaround. Do not restart a working setup
+   while the user is entering settings or authorizing Google.
 5. Guide the user through Add account, connection method, their own email
    address, editable server/login settings, review, and Connect account. A local
    account name can contain `@` and `.`. Never prefill a developer's identity.
@@ -116,21 +119,46 @@ provider-side settings, or an email account; continue to account sign-in after
 the save. Never assume the browser's current Google account is the desired email identity. See
 the [integration notes](onboarding-integration.md#google-integration-evidence).
 
+For an External Google app in Testing, treat **adding the intended Google email
+as a test user** as a separate checkpoint: open Audience in the same project,
+add the exact address under Test users, save, and ask the user to confirm it is
+visible in Google's list. Naming a support/contact address is not adding a test
+user. Pimcamp cannot inspect that list and an imported client file proves nothing
+about it. Internal or published apps have different requirements; do not tell
+users to change audience or publish merely to bypass an error.
+
+If Google says the app “has not completed the Google verification process”, first
+check Testing status, the saved test-user list and the selected sign-in identity.
+A generic `access_denied` response does not prove Workspace administrator policy
+is responsible. Help may be needed while the provider window remains open;
+Google does not always return an error callback. After correction, cancel the
+old sign-in and retry from Pimcamp; don't recreate or reimport the client file.
+
 ## Recover without misleading the user
 
-- **Setup expired:** attempts currently expire after 15 minutes. With the same
-  authenticated browser, reopen the live root page at port 33281 and start Add
-  account again. Unsaved details may need re-entry. This does not require a new
-  vault password. If browser authorization is missing, obtain a fresh launcher
-  handoff; inspect the existing process before restarting anything.
+- **Setup expired:** unfinished attempts expire after 15 minutes of inactivity.
+  The same authenticated form can renew an explicitly expired attempt and repeat
+  IMAP authentication checks without discarding its fields. Expired Google
+  permission requires another explicit sign-in; a new sign-in click renews an
+  expired setup automatically. This does not require a new vault password.
+  Completed save receipts remain available for 24 hours of inactivity in the
+  running setup process. If the process restarted or browser authorization is
+  missing, inspect saved accounts and obtain a fresh launcher handoff; do not
+  blindly repeat a save or promise unsaved fields survived a page reload.
 - **Could not save to keyring:** check storage, not the email password first.
   Keep the form open while repairing storage. Verify the repair before asking
-  for a retry; an expired attempt still needs restarting as above.
+  for a retry; preserve the open form and its nonsecret fields.
 - **Saving could not be confirmed:** inspect saved account state before retrying
   or creating a replacement attempt. Do not claim nothing was written merely
-  because the browser lost a response.
-- **Missing observation readiness:** explain that the account may be saved while
-  new-mail events remain unverified. Do not invent a successful notification.
+  because the browser lost a response. The browser first queries the matching
+  saved receipt read-only. If that cannot settle the outcome, keep the same
+  attempt for a retry; a missing/retired receipt requires checking Accounts first.
+- **Missing observation readiness:** successful authentication and save complete
+  onboarding. Do not frame an untested notification as failed setup or make the
+  user repeat authentication. Notification information belongs in account
+  details, not as a yellow completion warning. Do not invent a successful test
+  or send mail to make an indicator green; a real event test is separately
+  authorized work using the public subscription and mail operations.
 
 After the user finishes, record verified deployment status in the environment
 runbook. Clean up only this task's finished terminals, handoff files and tunnels

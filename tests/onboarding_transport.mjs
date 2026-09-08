@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../ui/onboarding/live-service.js', import.meta.url), 'utf8');
-function fixture({detached = false, start} = {}) {
+function fixture({detached = false, start, expireAction, failAction, saved = false} = {}) {
   const actions = [];
   let statuses = ['authorized'];
   const context = {
@@ -14,10 +14,17 @@ function fixture({detached = false, start} = {}) {
       if (path === '/api/session') return {ok:true, json:async () => ({csrf:'fixture'})};
       const request = JSON.parse(options.body);
       actions.push(request.action);
+      if (request.action === expireAction) {
+        expireAction = null;
+        return {ok:false, json:async () => ({error:{code:'setup_expired', message:'Expired'}})};
+      }
+      if (request.action === failAction) throw Error('Connection lost; outcome unknown');
       let result;
       switch (request.action) {
         case 'beginSetup': result = {setupId:'fixture-setup'}; break;
         case 'cancelSetup': result = {ok:true}; break;
+        case 'saveStatus': result = {ok:saved, accountId:saved ? 'saved-account' : undefined}; break;
+        case 'checkIncoming': case 'checkOutgoing': case 'commitAccount': result = {ok:true}; break;
         case 'googleApplicationStatus': result = {configured:false, helperAvailable:true}; break;
         case 'configureGoogleApplication':
           assert.equal(request.credentialsJson, 'fixture-downloaded-json');
@@ -82,4 +89,34 @@ function fixture({detached = false, start} = {}) {
   await test.service.beginSetup();
   assert.deepEqual(test.actions.slice(-2), ['cancelSetup', 'beginSetup']);
 }
-console.log('Passed 4 OAuth transport lifecycle checks; no network or credentials used.');
+{
+  const test = fixture({expireAction:'commitAccount'});
+  await test.service.beginSetup('existing-account');
+  assert.equal((await test.service.commitAccount({method:'imap', email:'fixture@example.com'})).ok, true);
+  assert.deepEqual(test.actions.slice(1), ['commitAccount','cancelSetup','beginSetup','checkIncoming','checkOutgoing','commitAccount']);
+}
+{
+  const test = fixture({failAction:'commitAccount'});
+  await test.service.beginSetup();
+  await assert.rejects(test.service.commitAccount({method:'imap'}), /outcome unknown/);
+  assert.deepEqual(test.actions, ['beginSetup','commitAccount','saveStatus'], 'Unknown writes must not be replayed');
+}
+{
+  const test = fixture({expireAction:'checkIncoming'});
+  await test.service.beginSetup();
+  await assert.rejects(test.service.checkIncoming({method:'google'}), error => error.code === 'google_signin_required');
+  assert.ok(!test.actions.includes('beginOAuth'), 'Expired consent must not be silently restarted');
+}
+{
+  const test = fixture({expireAction:'beginOAuth'});
+  await test.service.beginSetup();
+  assert.equal((await test.service.beginOAuth({}, new AbortController().signal)).status, 'authorized');
+  assert.deepEqual(test.actions.slice(1), ['beginOAuth','cancelSetup','beginSetup','beginOAuth','oauthStatus']);
+}
+{
+  const test = fixture({failAction:'commitAccount', saved:true});
+  await test.service.beginSetup();
+  assert.equal((await test.service.commitAccount({method:'imap'})).accountId, 'saved-account');
+  assert.deepEqual(test.actions, ['beginSetup','commitAccount','saveStatus']);
+}
+console.log('Passed 9 onboarding transport lifecycle checks; no network or credentials used.');

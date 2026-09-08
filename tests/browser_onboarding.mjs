@@ -109,7 +109,7 @@ try {
       if (document.querySelector('main').textContent.includes('fixture-browser-password')) throw Error('Password appeared in summary');
       click('[data-action="connect"]');
       await waitFor(() => document.querySelector('[data-screen="done"]'));
-      if (!document.querySelector('main').textContent.includes('Not tested')) throw Error('Notification status missing');
+      if (document.querySelector('main').textContent.includes('Not tested') || document.querySelector('main .notice--warning')) throw Error('Successful setup still presents untested notifications as a problem');
       const cookieVisible = document.cookie.includes('pimcamp_setup');
       if (cookieVisible) throw Error('Session cookie is readable by JavaScript');
       const accounts = await window.PimcampSetupService.listAccounts();
@@ -142,7 +142,7 @@ try {
       await waitFor(() => byText('Continue with Google'));
       if (!document.querySelector('main').textContent.includes('google-browser-test@example.com')) throw Error('Live registration lost the email draft');
       return {ownerHandoff:true, realTransport:true, customAccountSaved:true, reviewRedacted:true,
-              cookieHttpOnly:true, partialObserverStatus:true, accountListingRedacted:true,
+              cookieHttpOnly:true, completionWithoutNotificationWarning:true, accountListingRedacted:true,
               googleRegistrationImport:true, googleRegistrationPreservesAccount:true, googleRegistrationReturnsToConsent:true};
     })()`);
     assert.deepEqual(errors, [], 'Uncaught live browser exceptions');
@@ -179,7 +179,7 @@ try {
           const offenders = await evaluate(`Array.from(document.querySelectorAll('main *')).filter(n => n.getBoundingClientRect().right > innerWidth).map(n => ({tag:n.tagName, class:n.className, right:n.getBoundingClientRect().right})).slice(0,12)`);
           layoutFailures.push({width, theme, state, offenders});
         }
-        if (process.env.PIMCAMP_REVIEW_SCREENSHOTS === '1' && width !== 320 && ['accounts-empty', 'imap', 'google-missing', 'connect-incoming-failed', 'google-setup-intro', 'google-setup-platform', 'google-setup-import', 'google-setup-saved'].includes(state)) {
+        if (process.env.PIMCAMP_REVIEW_SCREENSHOTS === '1' && width !== 320 && ['accounts-empty', 'accounts-details', 'imap', 'google-missing', 'connect-incoming-failed', 'connect-storage-failed', 'done-remote', 'google-setup-intro', 'google-setup-platform', 'google-setup-import', 'google-setup-saved'].includes(state)) {
           const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
           await writeFile(join(output, `${width}-${theme}-${state}.png`), Buffer.from(shot.data, 'base64'));
         }
@@ -234,15 +234,17 @@ try {
     demo.outcomes.outgoing = 'pass';
     demo.outcomes.save = 'pass';
     demo.outcomes.observe = 'unavailable';
+    const originalObservation = service.observationReadiness;
+    service.observationReadiness = () => { throw Error('Onboarding must not wait for notification verification'); };
     const connect = document.querySelector('[data-action="connect"]');
     connect.click(); connect.click();
     await waitFor(() => !state.connect.running);
     if (commits !== 1 || !state.connect.saved) throw Error('Duplicate submission or missing save');
-    if (state.connect.rows.observe.state !== 'unavailable') throw Error('Watcher unavailability hidden');
     if (state.screen !== 'done' || document.querySelector('h1').textContent !== 'Account connected') throw Error('Saved account did not finish clearly');
     if (document.querySelector('main .notice--warning')) throw Error('Untested notifications look like failed setup');
     if (state.draft.incoming.password || state.draft.outgoing.password) throw Error('Passwords retained after save');
     service.commitAccount = originalCommit;
+    service.observationReadiness = originalObservation;
     gallery('details');
     set('f-email', 'back-navigation@custom.example');
     set('f-name', 'Keep this name');
@@ -252,6 +254,8 @@ try {
         document.getElementById('f-name').value !== 'Keep this name') throw Error('Back discarded account details');
     gallery('accounts-list');
     await waitFor(() => document.querySelector('[data-action="check-account"]'));
+    const details = document.querySelector('.account__details');
+    if (!details || !details.textContent.toLowerCase().includes('notification')) throw Error('Notification information missing from account details');
     const originalCheck = service.checkAccount;
     service.checkAccount = async () => { throw Object.assign(new Error('fixture'), {publicMessage:'Fixture connection unavailable'}); };
     document.querySelector('[data-action="check-account"]').click();
@@ -260,17 +264,17 @@ try {
     service.checkAccount = originalCheck;
     gallery('connect-save-failed');
     if (!document.querySelector('main').textContent.includes('Saving could not be confirmed')) throw Error('Save uncertainty hidden');
-    gallery('done-partial');
-    if (!document.querySelector('main').textContent.includes('New-mail notifications are not verified yet')) throw Error('Unverified watcher shown as missing');
-    gallery('connect-observe-unavailable');
+    gallery('done-google');
+    if (document.querySelector('main .notice--warning') || document.querySelector('main').textContent.includes('Not tested')) throw Error('Google completion looks unfinished');
+    gallery('connect-saved');
     for (const spinner of document.querySelectorAll('main .spinner')) {
       if (getComputedStyle(spinner).display !== 'none' || getComputedStyle(spinner).animationName !== 'none') throw Error('Completed check still spins');
     }
     return { validationFocus:true, customAccount:true, customPortPreserved:true,
              reviewRedacted:true, rejectedCredentialsNotSaved:true,
-             duplicateSubmitPrevented:true, partialStatusVisible:true, passwordsReleased:true,
+             duplicateSubmitPrevented:true, notificationDetailsAvailable:true, passwordsReleased:true,
              backPreservesDetails:true, checkFailureRecoverable:true, saveUncertaintyVisible:true,
-             watcherStatusTruthful:true, completedChecksStopSpinning:true, savedAccountFinishesAutomatically:true };
+             completionWithoutNotificationWarning:true, completedChecksStopSpinning:true, savedAccountFinishesAutomatically:true };
   })()`);
   assert.deepEqual(errors, [], 'Uncaught browser exceptions');
   // Exercise real browser keyboard events, not just JS click/requestSubmit.
@@ -379,6 +383,54 @@ try {
             registrationLateSaveHandled:true, registrationStaleSaveIgnored:true};
   })()`);
   Object.assign(journey, registration);
+  const recovery = await evaluate(`(async () => {
+    const {state, gallery, service} = window.PimcampOnboardingPreview;
+    const idle = async () => {
+      const deadline = Date.now() + 5000;
+      while (state.connect.running) {
+        if (Date.now() > deadline) throw Error('Recovery test timed out');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    gallery('google-setup-platform');
+    const checkpoint = document.querySelector('[data-slot="test-user-email"]');
+    if (!checkpoint || checkpoint.textContent !== state.draft.email) throw Error('Test-user checkpoint does not identify the entered email');
+    const guide = document.querySelector('main').textContent;
+    if (!guide.includes('Save') || !guide.includes('list')) throw Error('Google saved-list checkpoint missing');
+    gallery('google-progress');
+    const help = document.querySelector('[data-slot="help"]');
+    if (!help || !help.textContent.includes('verification process')) throw Error('No recovery help while waiting for callback');
+    help.querySelector('summary').click();
+    if (!help.open) throw Error('Google help does not expand');
+    gallery('connect-storage-failed');
+    if (Array.from(document.querySelectorAll('main button')).some(button => /Edit .*settings/.test(button.textContent))) throw Error('Vault error asks user to repair email settings');
+    if (!document.querySelector('main').textContent.includes('existing')) throw Error('Vault repair does not distinguish an existing vault');
+    gallery('done-remote');
+    const done = document.querySelector('main').textContent;
+    if (!done.includes(state.draft.email) || !done.includes(state.installation.host)) throw Error('Completion lost address or host');
+    const incoming = service.checkIncoming, commit = service.commitAccount;
+    try {
+      gallery('review-imap');
+      service.checkIncoming = async () => { throw Object.assign(new Error('fixture'), {code:'credential_storage', publicMessage:'Storage unavailable'}); };
+      document.querySelector('[data-action="connect"]').click(); await idle();
+      if (state.connect.problem?.kind !== 'storage') throw Error('Real storage code not recognized');
+      service.checkIncoming = incoming;
+      gallery('review-google-remote');
+      service.commitAccount = async () => { throw Object.assign(new Error('fixture'), {code:'google_signin_required', publicMessage:'Sign in again'}); };
+      document.querySelector('[data-action="connect"]').click(); await idle();
+      const retry = Array.from(document.querySelectorAll('main button')).find(button => button.textContent === 'Sign in with Google again');
+      if (!retry) throw Error('Expired Google save has no sign-in recovery');
+      const email = state.draft.email; retry.click();
+      if (state.screen !== 'google' || state.draft.email !== email) throw Error('Google expiry recovery lost draft');
+      gallery('review-imap');
+      service.commitAccount = async () => { throw Object.assign(new Error('fixture'), {code:'setup_unavailable', publicMessage:'Check saved accounts'}); };
+      document.querySelector('[data-action="connect"]').click(); await idle();
+      if (!Array.from(document.querySelectorAll('main button')).some(button => button.textContent === 'Check Accounts')) throw Error('Unknown save offers no reconciliation path');
+    } finally { service.checkIncoming = incoming; service.commitAccount = commit; }
+    return {googleTestUserCheckpoint:true, googleHelpDuringWait:true, vaultRepairNotPasswordBlame:true, completionIdentityAndHost:true,
+            structuredVaultError:true, expiredGoogleRecovery:true, unknownSaveRecovery:true};
+  })()`);
+  Object.assign(journey, recovery);
   await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2));
   await writeFile(join(output, 'interaction-results.json'), JSON.stringify(journey, null, 2));
   await writeFile(join(output, 'layout-failures.json'), JSON.stringify(layoutFailures, null, 2));

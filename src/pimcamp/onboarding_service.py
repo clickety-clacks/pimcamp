@@ -1,6 +1,7 @@
 """Account-setup workflow. Mail protocol and credential work stay in lower tools."""
 
 from dataclasses import dataclass, field
+from collections import deque
 import hashlib
 import json
 import os
@@ -21,7 +22,9 @@ from .onboarding_store import AccountStore
 
 
 class SetupError(Exception):
-    pass
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -35,6 +38,7 @@ class Attempt:
     references: dict = field(default_factory=dict)
     checks: dict = field(default_factory=dict)
     saved: bool = False
+    finalized: bool = False
     reconnect: bool = False
     previous_revision: str | None = None
     client_digest: str | None = None
@@ -62,6 +66,7 @@ class SetupService:
         self.identity_reader = identity_reader
         self.remote_host_label = remote_host_label
         self.attempts: dict[str, Attempt] = {}
+        self.expired_unsaved = deque(maxlen=128)
         self.lock = threading.RLock()
 
     def begin(self, reconnect_id: str | None = None) -> dict:
@@ -84,13 +89,22 @@ class SetupService:
         self.expire()
         attempt = self.attempts.get(setup_id)
         if attempt is None:
-            raise SetupError("This setup expired. Start account setup again.")
+            if setup_id in self.expired_unsaved:
+                raise SetupError("This unfinished setup expired. Your account details can be reused; sign in again if Google authorization expired.", code="setup_expired")
+            raise SetupError("This setup is no longer available. Check Accounts for a saved account before starting again; a previous save may have completed.", code="setup_unavailable")
+        attempt.created = time.monotonic()  # Expiry is inactivity, not time spent actively setting up.
         return attempt
 
     def expire(self):
         for key, attempt in list(self.attempts.items()):
-            if time.monotonic() - attempt.created > 900:
+            # Keep completed receipts longer so a delayed retry can reconcile a
+            # successful save instead of starting another account. No raw secrets
+            # remain in completed attempts (_cleanup cleared them at commit).
+            lifetime = 86400 if attempt.saved else 900
+            if time.monotonic() - attempt.created > lifetime:
                 self._cleanup(attempt)
+                if not attempt.saved:
+                    self.expired_unsaved.append(key)
                 del self.attempts[key]
 
     def _cleanup(self, attempt):
@@ -121,6 +135,16 @@ class SetupService:
 
     def list_accounts(self):
         return self.store.list_accounts()
+
+    def save_status(self, setup_id, draft):
+        """Read-only reconciliation of a lost save response; never publish or recheck mail."""
+        with self.lock:
+            attempt = self._attempt(setup_id)
+            fingerprint = hashlib.sha256((attempt.revision + json.dumps(draft, sort_keys=True)).encode()).hexdigest()
+            if not attempt.finalized or fingerprint != attempt.fingerprint:
+                return {"ok": False}
+            return {"ok": True, "accountId": attempt.identifier,
+                    "message": "Account settings are saved. The connection lost the original confirmation."}
 
     def google_application_status(self):
         if self.google_application:
@@ -307,6 +331,7 @@ class SetupService:
             if attempt.saved:
                 if self.runtime_config is not None:
                     self.store.ensure_runtime_default(attempt.identifier, self.runtime_config)
+                attempt.finalized = True
                 return {"ok": True, "accountId": attempt.identifier, "message": "Account settings are already saved."}
             if attempt.checks != {"imap": True, "smtp": True}:
                 raise SetupError("Both incoming and outgoing sign-in checks must pass before saving.")
@@ -358,6 +383,7 @@ class SetupService:
             self._cleanup(attempt)
             if self.runtime_config is not None:
                 self.store.ensure_runtime_default(attempt.identifier, self.runtime_config)
+            attempt.finalized = True
             return {"ok": True, "accountId": attempt.identifier, "message": f"Settings saved for {settings.email}."}
 
     def observation(self, identifier):

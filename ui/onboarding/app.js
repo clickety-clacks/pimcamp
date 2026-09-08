@@ -81,7 +81,7 @@
     googleHelperAvailable: true,
     googleSetupOutcome: 'saved',
     googleOutcome: 'authorized',
-    outcomes: { incoming: 'pass', outgoing: 'pass', save: 'pass', observe: 'pass' },
+    outcomes: { incoming: 'pass', outgoing: 'pass', save: 'pass' },
   });
   const demo = DEMO_DEFAULTS();
   // Public identifier only. Fixtures never hold a client secret or an imported client file.
@@ -180,7 +180,9 @@
     let accounts = [];
     let configuredClientId = null; // public identifier only; set when the demo "saves" a registration
     const lat = (f) => Math.max(0, Number(settings.latency) || 0) * f;
-    const publicError = (message) => { const e = new Error(message); e.publicMessage = message; return e; };
+    const publicError = (message, code) => { const e = new Error(message); e.publicMessage = message; if (code) e.code = code; return e; };
+    // Same shape as the installation's real vault failure: a thrown, user-facing message with no traceback.
+    const VAULT_LOCKED = 'Could not save to the encrypted password vault on this host. Unlock it or check that Secret Service is running.';
 
     const api = {
       isDemo: true,
@@ -206,7 +208,7 @@
         if (!check.ok) throw publicError(check.message);
         if (settings.googleSetupOutcome === 'unconfirmed') await new Promise(() => {}); // never settles; the presentation's timeout takes over
         if (settings.googleSetupOutcome === 'rejected') throw publicError('This file doesn’t describe a Desktop app client this installation can use. Download the client file again from Google Auth Platform and choose that one.');
-        if (settings.googleSetupOutcome === 'save-failed') throw publicError('The installation’s protected storage refused to save the registration. Nothing was changed. Try again; if it keeps failing, the storage may be locked.');
+        if (settings.googleSetupOutcome === 'save-failed') throw publicError(VAULT_LOCKED, 'storage');
         settings.oauthClientConfigured = true;
         settings.googleHelperAvailable = true;
         configuredClientId = check.clientId;
@@ -239,14 +241,16 @@
           case 'cancelled': return { status: 'cancelled', byUser: false };
           case 'expired': return { status: 'expired' };
           case 'denied-policy': return { status: 'denied-policy' };
+          case 'failed': throw publicError('Google authorization could not be verified. Try again or check the installation’s Google application settings.');
           default: return { status: 'cancelled', byUser: false };
         }
       },
 
       async checkIncoming(draft, signal) {
         await delay(lat(1.4), signal);
-        if (draft.method === 'google') return { ok: true, message: 'Google accepted the authorization for reading mail.' };
         const o = settings.outcomes.incoming;
+        if (o === 'storage') throw publicError(VAULT_LOCKED, 'storage'); // the vault refused before any sign-in was tried
+        if (draft.method === 'google') return { ok: true, message: 'Google accepted the authorization for reading mail.' };
         if (o === 'fail') return { ok: false, code: 'auth', message: 'We couldn’t sign in to incoming mail. Check your username and password.' };
         if (o === 'unreachable') return { ok: false, code: 'unreachable', message: `We couldn’t reach ${draft.incoming.host} on port ${draft.incoming.port}. Check the server name, port, and connection security.` };
         return { ok: true, message: `Signed in to ${draft.incoming.host} as ${draft.incoming.username}.` };
@@ -263,6 +267,7 @@
       async commitAccount(draft, signal) {
         await delay(lat(1.0), signal);
         if (settings.outcomes.save === 'fail') return { ok: false, message: 'The settings couldn’t be saved. Nothing was changed. Try again; if it keeps failing, the installation may be out of disk space or read-only.' };
+        if (settings.outcomes.save === 'expired') throw publicError('This setup expired. Start account setup again.', 'expired');
         const record = {
           id: draft.reconnectId || `preview-${Date.now()}`, demo: false, preview: true,
           address: draft.email.trim(), name: draft.name.trim(), method: draft.method,
@@ -275,12 +280,11 @@
         return { ok: true, accountId: record.id, message: `Settings saved for ${record.address}.` };
       },
 
+      /** Kept on the boundary for callers outside setup. The setup screens no longer call it: a
+       *  saved account is complete, and new-mail delivery is only ever reported as not tested here. */
       async observationReadiness(accountId, signal) {
         await delay(lat(0.9), signal);
-        const o = settings.outcomes.observe;
-        if (o === 'unavailable') return { state: 'unavailable', message: 'Mail watching isn’t installed on this installation yet. Reading and sending mail still work.' };
-        if (o === 'fail') return { state: 'failed', message: 'Mail watching couldn’t start for this account. Reading and sending mail still work.' };
-        return { state: 'passed', message: 'Pimcamp will notice new mail for this account as it arrives.' };
+        return { state: 'unavailable', message: 'Mail watching is configured but a new-mail event has not been verified. Reading and sending have separate connection checks.' };
       },
 
       async checkAccount(id) {
@@ -337,9 +341,34 @@
     };
   }
   function newChecks() {
-    const row = () => ({ state: 'waiting', message: '' });
+    const row = () => ({ state: 'waiting', message: '', code: null });
+    // Three steps decide the outcome. Mail watching is not a setup step: nothing here tests notifications.
     return { running: false, cancellable: false, cancelled: false, saved: false, accountId: null, controller: null,
-      rows: { incoming: row(), outgoing: row(), save: row(), observe: row() } };
+      problem: null, // { kind: 'storage'|'expired', message } for a screen-level notice that is not about the entered details
+      rows: { incoming: row(), outgoing: row(), save: row() } };
+  }
+
+  /** Classifies a failed result or thrown error. Explicit `code` wins; otherwise the user-facing message decides. */
+  const STORAGE_RE = /keyring|vault|secret service|protected storage|credential stor/i;
+  const EXPIRED_RE = /setup (attempt )?(has )?expired|start account setup again/i;
+  function failureCode(source) {
+    if (!source) return null;
+    if (source.code === 'credential_storage') return 'storage';
+    if (source.code === 'setup_expired' || source.code === 'google_signin_required') return 'expired';
+    if (source.code === 'setup_unavailable') return 'unavailable';
+    if (['auth', 'unreachable', 'storage', 'expired'].includes(source.code)) return source.code;
+    const text = source.publicMessage || source.message || '';
+    if (STORAGE_RE.test(text)) return 'storage';
+    if (EXPIRED_RE.test(text)) return 'expired';
+    return null;
+  }
+
+  /** The shared vault explanation. Names the mail host when the installation reports one. */
+  function vaultHelp({ open = false } = {}) {
+    const d = tpl('tpl-vault-help');
+    slot(d, 'vault-host').textContent = state.installation.host ? `the mail host ${state.installation.host}` : 'the mail host, where this installation runs';
+    if (open) d.open = true;
+    return d;
   }
 
   const state = {
@@ -441,11 +470,15 @@
     stage.append(n);
   }
 
-  function showServiceError(error) {
+  /** Whole-screen failure of a service call. Entered details stay in `state.draft`; `retry` and `back` keep the user in the flow. */
+  function showServiceError(error, { retry = null, back = null } = {}) {
     const message = error.publicMessage || 'Could not reach account setup. Check that it is still running, then retry.';
+    const kept = state.draft.email ? ` Your details for ${state.draft.email} are kept.` : '';
+    const actions = el('div', { class: 'actions' });
+    if (back) actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }));
+    actions.append(btn('Try again', { kind: 'primary', iconName: 'refresh', onclick: retry || (() => { state.accountsLoaded = false; go('accounts'); }) }));
     stage.replaceChildren(el('h1', {class: 'screen__title', tabindex: '-1', text: 'Setup needs attention'}),
-      el('p', {class: 'screen__lede', text: message}),
-      btn('Try again', {onclick: () => { state.accountsLoaded = false; go('accounts'); }}));
+      el('p', {class: 'screen__lede', text: message + kept}), actions);
     focusTitle(); alertNow(message);
   }
 
@@ -510,7 +543,29 @@
     if (a.status === 'needs-reconnect') { reconnectBtn.className = 'btn btn--primary btn--small'; }
     checkBtn.addEventListener('click', () => checkAccount(a.id));
     reconnectBtn.addEventListener('click', () => startReconnect(a));
+    accountDetails(r, a);
     return r;
+  }
+
+  /** Per-account facts from `listAccounts`. Notifications are described as tested only when the record says so explicitly. */
+  function accountDetails(r, a) {
+    slot(r, 'details-for').textContent = ` for ${a.address}`;
+    const dl = slot(r, 'detail-list');
+    const row = (t, v, small) => { const x = tpl('tpl-summary-row'); slot(x, 'term').textContent = t; const dd = slot(x, 'value'); if (typeof v === 'string') dd.textContent = v; else dd.append(v); if (small) dd.append(el('small', { text: small })); dl.append(x); };
+    const secLabel = (s) => s === 'starttls' ? 'STARTTLS' : 'TLS';
+    const server = (s) => [s.host, s.port ? `port ${s.port}` : null, s.security ? secLabel(s.security) : null].filter(Boolean).join(' · ');
+    row('Sign-in', a.method === 'google' ? 'Google' : 'IMAP & SMTP with a password',
+      a.method === 'google' ? 'Pimcamp keeps the permission Google granted, not a password.' : 'The password is kept in the encrypted vault on the host, never here.');
+    if (a.incoming && a.incoming.host) row('Incoming server', server(a.incoming), a.incoming.username ? `Username ${a.incoming.username}` : null);
+    if (a.outgoing && a.outgoing.host) row('Outgoing server', server(a.outgoing), a.outgoing.sameLogin === false && a.outgoing.username ? `Username ${a.outgoing.username}` : null);
+    if (state.installation.host) row('Saved on', state.installation.host);
+    row('Sign-in checks', a.status === 'connected' ? 'Passed' : a.status === 'needs-reconnect' ? 'Failing' : 'Not checked yet',
+      a.note || (a.status === 'connected' ? 'Incoming and outgoing sign-in checks passed. No mail was sent.' : null));
+    const obs = a.observation || null;
+    const verified = !!(obs && obs.state === 'verified');
+    const pill = el('span', { class: 'status', 'data-tone': verified ? 'success' : '', text: verified ? 'Verified' : 'Not tested' });
+    row('New-mail notifications', pill, verified ? (obs.message || 'A real new-mail event reached Pimcamp for this account.')
+      : (obs && obs.message) || 'Setup checks sign-in only and sends no test mail. Whether Pimcamp notices new mail in this mailbox hasn’t been confirmed yet.');
   }
 
   async function checkAccount(id) {
@@ -538,6 +593,8 @@
     const active = document.activeElement;
     const activeAction = active && old.contains(active) ? active.dataset.action : null;
     const fresh = accountRow(a);
+    const oldDetails = slot(old, 'details');
+    if (oldDetails && oldDetails.open) slot(fresh, 'details').open = true; // an expanded details area survives a re-check
     old.replaceWith(fresh);
     if (activeAction) { const again = $(`[data-action="${activeAction}"]`, fresh); if (again) again.focus(); }
   }
@@ -708,26 +765,27 @@
         actions.append(primary('Continue with Google', beginOAuth, 'external'));
         break;
       case 'in-progress':
-        panel.append(head('accent', 'spinner', 'Waiting for Google', 'Finish signing in and approving access in the Google window. This page updates on its own when you’re done. If you closed that window, choose Cancel here to start again.'));
-        panel.append(el('p', { class: 'panel__text', text: 'Nothing has been saved yet. You can cancel and nothing changes.' }));
+        panel.append(head('accent', 'spinner', 'Waiting for Google', `Finish signing in as ${email} and approving access in the Google window. This page updates on its own when Google sends you back.`));
+        panel.append(el('p', { class: 'panel__text', text: 'If the Google window shows an error instead of asking for permission, this page won’t change by itself: choose Cancel here, then open “Trouble with Google sign-in?” below. Nothing has been saved yet.' }));
         actions.append(secondary('Cancel', cancelOAuth));
         break;
       case 'cancelled':
-        panel.append(head('warning', 'alert', 'Google sign-in was cancelled', s.byUser ? 'You cancelled before Google finished. Nothing was changed.' : 'The Google window was closed or access was declined before it finished. Nothing was changed.'));
+        panel.append(head('warning', 'alert', 'Google sign-in was cancelled', s.byUser ? 'You cancelled before Google finished. Nothing was changed.' : 'The Google window was closed, or Google reported that access was declined, before sign-in finished. Nothing was changed. If Google showed an error page instead of asking for permission, the help below covers the usual causes.'));
         actions.append(primary('Try again', beginOAuth, 'refresh'));
         break;
       case 'failed':
         panel.append(head('danger', 'alert', 'Google sign-in could not finish',
-          s.message || 'Try again or check the installation’s Google authorization settings. Nothing was saved.'));
+          `${s.message || 'Google’s answer could not be verified for this attempt.'} Nothing was saved. If the Google window ended on an error, see the help below before trying again.`));
         actions.append(primary('Try again', beginOAuth, 'refresh'));
         break;
       case 'expired':
-        panel.append(head('warning', 'alert', 'The sign-in request expired', 'Google sign-in requests only stay valid for a few minutes. Start again and finish the approval in one go.'));
+        panel.append(head('warning', 'alert', 'The sign-in request expired', 'Google sign-in requests only stay valid for a few minutes. Start again and finish the approval in one go. If Google stopped at an error, the help below explains what to fix first.'));
         actions.append(primary('Start again', beginOAuth, 'refresh'));
         break;
       case 'denied-policy':
-        panel.append(head('danger', 'x', 'Your organization doesn’t allow this app',
-          `Google reported that the administrator for ${domainOf(email) || 'this domain'} hasn’t approved Pimcamp for ${email}. Ask your Google Workspace administrator to allow it, then try again. If your organization permits app passwords, IMAP & SMTP is an alternative.`));
+        // This backend status is reserved for explicit organization-policy errors.
+        panel.append(head('danger', 'x', `Google denied access for ${email}`,
+          'Google reported an organization-policy restriction. Ask the Google Workspace administrator to allow this app. Nothing was changed. If the Google window shows a different error, the help below explains the other common causes.'));
         actions.append(useImap(), primary('Try again', beginOAuth, 'refresh'));
         break;
       case 'missing-client': {
@@ -750,6 +808,7 @@
           d.google.identity = s.identity;
           actions.append(primary('Continue', () => go('review'), 'arrow-right'));
         } else {
+          // The mismatch guard: an identity that differs from the entered address is never resolved silently.
           panel.append(head('warning', 'alert', 'Google authorized a different account', `You entered ${email}, but Google signed in as ${s.identity}. Pimcamp won’t guess; choose which one to connect.`));
           panel.append(identityCard(s.identity, 'Authorized by Google'));
           actions.append(
@@ -764,6 +823,10 @@
         break;
       }
     }
+    // Recovery help stays reachable in every state; it opens on its own when Google refused or never called back.
+    const help = slot(n, 'help');
+    $$('[data-slot="help-email"]', help).forEach(x => { x.textContent = email; });
+    if (s.status === 'denied-policy' || s.status === 'failed' || s.status === 'expired' || (s.status === 'cancelled' && !s.byUser)) help.open = true;
     $('[data-action="back"]', n).addEventListener('click', back);
     stage.append(n);
   }
@@ -783,7 +846,7 @@
   async function recheckInstallation() {
     renderLoading('Checking installation…');
     try { await refreshInstallation(); go('google'); }
-    catch (error) { showServiceError(error); }
+    catch (error) { showServiceError(error, { retry: recheckInstallation, back: () => go('google') }); }
   }
 
   async function beginOAuth() {
@@ -936,7 +999,13 @@
         break;
       }
       case 'project': body.append(tpl('tpl-gsetup-project')); actions.append(gsBackBtn(), gsCancelBtn(), gsNextBtn()); break;
-      case 'platform': body.append(tpl('tpl-gsetup-platform')); actions.append(gsBackBtn(), gsCancelBtn(), gsNextBtn()); break;
+      case 'platform': {
+        const part = tpl('tpl-gsetup-platform');
+        // The test-user step names the address being connected so it can be matched against Google's list.
+        $$('[data-slot="test-user-email"]', part).forEach(x => { x.textContent = state.draft.email || 'the address you will connect'; });
+        body.append(part); actions.append(gsBackBtn(), gsCancelBtn(), gsNextBtn());
+        break;
+      }
       case 'import': renderImportPart(body); buildImportActions(actions); break;
       case 'saved': renderSavedPart(body, actions); break;
     }
@@ -1026,6 +1095,7 @@
       clearErrors(part);
     });
     $('[data-action="check-app-status"]', part).addEventListener('click', checkAppStatus);
+    slot(part, 'vault').replaceWith(vaultHelp({ open: !!(gs.error && gs.error.kind === 'storage') }));
     renderSaveError(part);
     part.addEventListener('submit', (e) => { e.preventDefault(); submitClientFile(part); });
     body.append(part);
@@ -1058,12 +1128,17 @@
     const gs = state.googleSetup;
     const box = slot(form, 'save-error');
     if (!gs.error) { box.hidden = true; return; }
-    const unconfirmed = gs.error.kind === 'unconfirmed';
-    slot(form, 'save-error-title').textContent = unconfirmed ? 'Saving could not be confirmed' : 'The registration wasn’t saved';
-    slot(form, 'save-error-text').textContent = `${gs.error.message} ${unconfirmed
+    const kind = gs.error.kind;
+    slot(form, 'save-error-title').textContent = kind === 'unconfirmed' ? 'Saving could not be confirmed'
+      : kind === 'storage' ? 'The password vault couldn’t store the client secret' : 'The registration wasn’t saved';
+    slot(form, 'save-error-text').textContent = `${gs.error.message} ${kind === 'unconfirmed'
       ? 'Check what the installation has saved before trying again.'
-      : 'You can choose the file again and retry, or check what the installation has saved.'}`;
+      : kind === 'storage'
+        ? 'The file you chose is kept here. Ask the agent or operator to unlock or repair the vault on the host (see “About the encrypted password vault” below), then choose Save again. Nothing about the file is wrong.'
+        : 'You can choose the file again and retry, or check what the installation has saved.'}`;
     box.hidden = false;
+    const vault = slot(form, 'vault-help');
+    if (vault && kind === 'storage') vault.open = true;
   }
 
   async function submitClientFile(form) {
@@ -1144,13 +1219,15 @@
     gs.submitting = false;
     if (failure && failure.name === 'TimeoutError') {
       gs.error = { kind: 'unconfirmed', message: 'The installation didn’t confirm the save within a minute. It may still be finishing, or the request was lost.' };
+    } else if (failure && failureCode(failure) === 'storage') {
+      gs.error = { kind: 'storage', message: failure.publicMessage };
     } else if (failure) {
       gs.error = { kind: 'unconfirmed', message: failure.publicMessage || 'The connection ended before the installation confirmed the save.' };
     } else {
       gs.error = { kind: 'unconfirmed', message: 'The installation answered without confirming that the registration was saved.' };
     }
     refreshImportChrome();
-    alertNow(`${gs.error.kind === 'unconfirmed' ? 'Saving could not be confirmed' : 'The registration wasn’t saved'}. ${gs.error.message}`);
+    alertNow(`${gs.error.kind === 'unconfirmed' ? 'Saving could not be confirmed' : gs.error.kind === 'storage' ? 'The password vault couldn’t store the client secret' : 'The registration wasn’t saved'}. ${gs.error.message}`);
     const retry = $('[data-action="setup-save"]', stage);
     if (retry) retry.focus();
   }
@@ -1237,10 +1314,11 @@
       row('Saved on', state.installation.host || 'the installation you are connected to', 'This is a remote installation. Settings are saved there, not on the computer running this browser.');
     }
     if (state.installation.credentialStorage === 'session') {
-      sec('Credential storage');
-      row('Temporary login', 'This installation uses a volatile keyring. You may need to reconnect after logout or reboot.');
+      sec('Password vault');
+      row('Temporary only', 'This installation’s vault does not survive logout or reboot, so you may need to reconnect afterwards.');
     }
     if (d.reconnectId) { sec('Reconnect'); row('Existing account', 'Will be updated in place', 'Nothing is replaced until the checks pass.'); }
+    slot(n, 'vault').replaceWith(vaultHelp());
 
     $('[data-action="back"]', n).addEventListener('click', back);
     $('[data-action="connect"]', n).addEventListener('click', () => { state.connect = newChecks(); go('connect'); runConnect(); });
@@ -1252,7 +1330,6 @@
     { key: 'incoming', label: 'Incoming mail sign-in' },
     { key: 'outgoing', label: 'Outgoing mail sign-in' },
     { key: 'save', label: 'Save settings' },
-    { key: 'observe', label: 'Mail watching' },
   ];
   const STATE_LABEL = { waiting: ['', 'Waiting'], checking: ['accent', 'Checking…'], passed: ['success', 'Passed'], failed: ['danger', 'Failed'], unavailable: ['warning', 'Unavailable'] };
 
@@ -1272,13 +1349,18 @@
     if (!n) return;
     const c = state.connect;
     const d = state.draft;
+    const problem = c.running ? null : c.problem; // storage or expiry: the entered details are not the issue
     const failedAuth = ['incoming', 'outgoing'].some(k => c.rows[k].state === 'failed');
     const saveFailed = c.rows.save.state === 'failed';
+    const host = state.installation.host || 'the host';
 
     let title, lede;
-    if (c.running) { title = `Connecting ${d.email}`; lede = c.cancellable ? 'Signing in to check your settings. Nothing is saved until both sign-ins pass.' : 'Saving settings and checking mail watching. This only takes a moment.'; }
+    if (c.running) { title = `Connecting ${d.email}`; lede = c.cancellable ? 'Signing in to check your settings. Nothing is saved until both sign-ins pass.' : 'Saving the settings. This only takes a moment.'; }
     else if (c.cancelled) { title = 'Checks cancelled'; lede = 'Nothing was saved. Your settings are kept, so you can run the checks again whenever you like.'; }
-    else if (c.saved) { title = 'Settings saved'; lede = 'The account is connected. Review the results, then continue.'; }
+    else if (c.saved) { title = 'Settings saved'; lede = `${d.email} is connected. Continue to see what this account can do.`; }
+    else if (problem && problem.kind === 'storage') { title = 'Your password couldn’t be stored yet'; lede = `The encrypted password vault on ${host} refused to keep the password. That says nothing about whether the password is right, and everything you entered is kept.`; }
+    else if (problem && problem.kind === 'expired') { title = 'This setup attempt expired'; lede = d.method === 'google' ? 'Your account details are kept. Sign in with Google again to renew permission, then review and connect.' : 'Everything you entered is kept; run the checks again to renew this unfinished attempt.'; }
+    else if (problem && problem.kind === 'unavailable') { title = 'Check whether this account was saved'; lede = 'The earlier setup is no longer available. Check Accounts before starting again; a previous save may have completed.'; }
     else if (failedAuth) { title = 'Pimcamp couldn’t connect this account yet'; lede = 'Nothing was saved and your settings are kept. Fix the failed step and try again; steps that passed won’t be repeated.'; }
     else if (saveFailed) { title = 'Saving could not be confirmed'; lede = 'The sign-ins passed, but setup could not confirm the completed save. Try saving again; the same attempt will not create a duplicate account.'; }
     else { title = `Connecting ${d.email}`; lede = 'Starting checks…'; }
@@ -1292,6 +1374,27 @@
       if (old) old.replaceWith(checkRow(def, c.rows[def.key]));
     }
 
+    // Screen-level notice for failures that are about the host, not the entered details.
+    const notice = slot(n, 'notice');
+    notice.replaceChildren();
+    notice.hidden = !problem;
+    if (problem) {
+      notice.className = 'notice notice--danger';
+      notice.setAttribute('role', 'status');
+      const body = el('div', { class: 'notice__body' });
+      if (problem.kind === 'storage') {
+        body.append(
+          el('p', { class: 'notice__title', text: `The password vault on ${host} needs attention` }),
+          el('p', { text: problem.message }),
+          el('p', { text: 'Ask the agent or operator to unlock or repair the vault on the host; this page can’t do that, and nobody should ask you for the vault password in chat. You don’t need to enter your email password again. Once the vault is ready, choose Try again.' }),
+          vaultHelp({ open: true }),
+        );
+      } else {
+        body.append(el('p', { class: 'notice__title', text: 'The attempt is no longer open' }), el('p', { text: problem.message }));
+      }
+      notice.append(icon('alert'), body);
+    }
+
     const actions = slot(n, 'actions');
     actions.replaceChildren();
     if (c.running) {
@@ -1301,6 +1404,14 @@
       actions.append(btn('Continue', { kind: 'primary', iconName: 'arrow-right', onclick: () => go('done') }));
     } else if (c.cancelled) {
       actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), btn('Run checks again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect() }));
+    } else if (problem && problem.kind === 'storage') {
+      actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), btn('Try again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect({ retry: true }) }));
+    } else if (problem && problem.kind === 'expired') {
+      actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), d.method === 'google'
+        ? btn('Sign in with Google again', { kind: 'primary', onclick: () => { state.oauth.status = 'idle'; d.google.identity = null; go('google'); } })
+        : btn('Run checks again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect() }));
+    } else if (problem && problem.kind === 'unavailable') {
+      actions.append(btn('Check Accounts', { kind: 'primary', onclick: () => { state.accountsLoaded = false; go('accounts'); } }));
     } else if (failedAuth) {
       actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), btn('Edit settings', { kind: 'secondary', onclick: () => go(d.method === 'google' ? 'google' : 'imap') }), btn('Retry failed checks', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect({ retry: true }) }));
     } else if (saveFailed) {
@@ -1318,27 +1429,28 @@
     slot(row, 'message').textContent = r.message || (r.state === 'waiting' ? waitingText(def.key) : '');
     const acts = slot(row, 'actions');
     const d = state.draft;
-    if (!state.connect.running) {
-      if (r.state === 'failed' && (def.key === 'incoming' || def.key === 'outgoing')) {
-        acts.hidden = false;
-        if (d.method === 'google') acts.append(btn('Sign in with Google again', { size: 'small', onclick: () => { state.oauth.status = 'idle'; d.google.identity = null; go('google'); } }));
-        else acts.append(btn(def.key === 'incoming' ? 'Edit incoming settings' : 'Edit outgoing settings', { size: 'small', onclick: () => { go('imap'); const target = def.key === 'incoming' ? '#f-in-pass' : (d.outgoing.sameLogin ? '#f-in-pass' : '#f-out-pass'); const f = $(target, stage); if (f) f.focus(); } }));
-      }
-      if (r.state === 'failed' && def.key === 'observe' && state.connect.saved) {
-        acts.hidden = false; acts.append(btn('Try again', { size: 'small', iconName: 'refresh', onclick: () => runConnect({ retry: true }) }));
-      }
+    // A storage or expiry failure is not about the entered password, so it gets no "edit" shortcut here.
+    const editable = r.state === 'failed' && (def.key === 'incoming' || def.key === 'outgoing') && r.code !== 'storage' && r.code !== 'expired';
+    if (!state.connect.running && editable) {
+      acts.hidden = false;
+      if (d.method === 'google') acts.append(btn('Sign in with Google again', { size: 'small', onclick: () => { state.oauth.status = 'idle'; d.google.identity = null; go('google'); } }));
+      else acts.append(btn(def.key === 'incoming' ? 'Edit incoming settings' : 'Edit outgoing settings', { size: 'small', onclick: () => { go('imap'); const target = def.key === 'incoming' ? '#f-in-pass' : (d.outgoing.sameLogin ? '#f-in-pass' : '#f-out-pass'); const f = $(target, stage); if (f) f.focus(); } }));
     }
     return row;
   }
   function waitingText(key) {
-    return { incoming: 'Signs in to the incoming server. Nothing is downloaded.', outgoing: 'Signs in to the outgoing server. No mail is sent.', save: 'Writes the settings for this account only.', observe: 'Checks whether Pimcamp can notice new mail for this account.' }[key];
+    return { incoming: 'Signs in to the incoming server. Nothing is downloaded.', outgoing: 'Signs in to the outgoing server. No mail is sent.', save: 'Writes the settings for this account only.' }[key];
   }
-  function updateRow(key, st, message) {
-    state.connect.rows[key] = { state: st, message: message || '' };
+  function updateRow(key, st, message, code = null) {
+    state.connect.rows[key] = { state: st, message: message || '', code };
     const def = CHECK_ROWS.find(r => r.key === key);
     const old = $(`.check-row[data-key="${key}"]`, stage);
     if (old) old.replaceWith(checkRow(def, state.connect.rows[key]));
     if (st !== 'checking') announce(`${def.label}: ${STATE_LABEL[st][1]}. ${message || ''}`);
+  }
+  /** Records a host-level problem (vault, expiry) so the connect screen explains it instead of blaming the password. */
+  function noteProblem(code, message) {
+    state.connect.problem = ['storage', 'expired', 'unavailable'].includes(code) ? { kind: code, message } : null;
   }
 
   async function runConnect({ retry = false } = {}) {
@@ -1346,9 +1458,9 @@
     if (c.running) return;
     const d = state.draft;
     const controller = new AbortController();
-    c.controller = controller; c.running = true; c.cancelled = false;
+    c.controller = controller; c.running = true; c.cancelled = false; c.problem = null;
     const todo = (k) => !retry || c.rows[k].state !== 'passed';
-    for (const k of Object.keys(c.rows)) if (todo(k) && c.rows[k].state !== 'passed') c.rows[k] = { state: 'waiting', message: '' };
+    for (const k of Object.keys(c.rows)) if (todo(k) && c.rows[k].state !== 'passed') c.rows[k] = { state: 'waiting', message: '', code: null };
     c.cancellable = !c.saved;
     refreshConnectChrome();
     announce(retry ? 'Retrying failed steps.' : `Connecting ${d.email}. Checking incoming mail sign-in.`);
@@ -1359,75 +1471,73 @@
           if (!todo(k)) continue;
           updateRow(k, 'checking', k === 'incoming' ? 'Signing in to incoming mail…' : 'Signing in to outgoing mail…');
           const r = await (k === 'incoming' ? service.checkIncoming(d, controller.signal) : service.checkOutgoing(d, controller.signal));
-          updateRow(k, r.ok ? 'passed' : 'failed', r.message);
+          const code = r.ok ? null : failureCode(r);
+          updateRow(k, r.ok ? 'passed' : 'failed', r.message, code);
+          if (!r.ok) noteProblem(code, r.message);
         }
         if (c.rows.incoming.state !== 'passed' || c.rows.outgoing.state !== 'passed') {
-          finishConnect(); alertNow('A sign-in check failed. Nothing was saved.'); return;
+          finishConnect(); alertNow(c.problem ? `${$('.screen__title', stage).textContent}. Nothing was saved.` : 'A sign-in check failed. Nothing was saved.'); return;
         }
         c.cancellable = false; refreshConnectChrome();
         updateRow('save', 'checking', 'Saving settings…');
         const s = await service.commitAccount(d, null);
-        if (!s.ok) { updateRow('save', 'failed', s.message); finishConnect(); alertNow('Settings couldn’t be saved. Nothing was changed.'); return; }
+        if (!s.ok) { const code = failureCode(s); updateRow('save', 'failed', s.message, code); noteProblem(code, s.message); finishConnect(); alertNow('Settings couldn’t be saved. Nothing was changed.'); return; }
         c.saved = true; c.accountId = s.accountId;
         d.incoming.password = ''; d.outgoing.password = '';
         state.accountsLoaded = false; // list will be reloaded from the service
         updateRow('save', 'passed', s.message);
       }
-      if (todo('observe')) {
-        updateRow('observe', 'checking', 'Checking mail watching…');
-        const o = await service.observationReadiness(c.accountId, null);
-        updateRow('observe', o.state, o.message);
-      }
+      // A saved account is a finished setup. Mail watching is not checked here and never delays this.
       finishConnect();
       go('done');
-      announce('Account connected. Setup is complete.' + (c.rows.observe.state === 'passed' ? '' : ' New-mail notifications have not been verified.'));
+      announce(`Account connected. ${d.email} is saved. Setup is complete.`);
     } catch (e) {
       if (isAbort(e)) {
-        for (const k of Object.keys(c.rows)) if (c.rows[k].state === 'checking') c.rows[k] = { state: 'waiting', message: '' };
+        for (const k of Object.keys(c.rows)) if (c.rows[k].state === 'checking') c.rows[k] = { state: 'waiting', message: '', code: null };
         c.cancelled = true;
         finishConnect();
         announce('Checks cancelled. Nothing was saved.');
         return;
       }
-      // Unexpected failure: never leave the screen stuck. Mark the in-flight step failed with a plain message.
-      for (const k of Object.keys(c.rows)) if (c.rows[k].state === 'checking') c.rows[k] = { state: 'failed', message: e.publicMessage || 'This step could not finish. Check the connection and try again.' };
+      // A thrown failure: never leave the screen stuck. Mark the in-flight step failed with the service's plain message.
+      const code = failureCode(e);
+      const message = e.publicMessage || 'This step could not finish. Check the connection and try again.';
+      for (const k of Object.keys(c.rows)) if (c.rows[k].state === 'checking') c.rows[k] = { state: 'failed', message, code };
+      noteProblem(code, message);
       finishConnect();
-      alertNow('A step failed unexpectedly. You can try again.');
+      alertNow(c.problem ? `${$('.screen__title', stage).textContent}. ${message}` : 'A step failed unexpectedly. You can try again.');
     }
   }
   function finishConnect() { const c = state.connect; c.running = false; c.controller = null; c.cancellable = false; refreshConnectChrome(); }
   function cancelConnect() { const c = state.connect; if (c.running && c.cancellable && c.controller) c.controller.abort(); }
 
   /* ---------- Done ---------- */
+  /** Shown only after a confirmed save. Address and host are always visible; nothing here is a warning. */
   function renderDone() {
     const n = tpl('tpl-done');
     const d = state.draft;
-    const observe = state.connect.rows.observe;
-    const partial = observe.state !== 'passed';
-    const where = state.installation.remote ? (state.installation.host || 'the remote installation') : 'this installation';
+    const host = state.installation.host || 'this installation';
     slot(n, 'title').textContent = 'Account connected';
-    slot(n, 'lede').textContent = `${d.email} is ready. Pimcamp saved the settings on ${where}${d.reconnectId ? ' and updated the existing account' : ''}.`;
+    slot(n, 'lede').textContent = `${d.email} is connected${d.reconnectId ? ' again' : ''}. Pimcamp saved its settings on ${host}${state.installation.remote ? ', the installation you are connected to' : ''}.`;
+
+    const dl = slot(n, 'summary');
+    const row = (t, v, small) => { const r = tpl('tpl-summary-row'); slot(r, 'term').textContent = t; const dd = slot(r, 'value'); dd.textContent = v; if (small) dd.append(el('small', { text: small })); dl.append(r); };
+    row('Email address', d.email);
+    if (d.name.trim()) row('Account name', d.name.trim(), 'Only shown inside Pimcamp.');
+    if (d.method === 'google') row('Authorized by Google', d.google.identity || d.email, 'Pimcamp keeps the permission Google granted, not a password.');
+    else row('Sign-in', 'IMAP & SMTP with a password', 'The password is in the encrypted vault on the host, never in this browser.');
+    row('Saved on', host, state.installation.remote ? 'A remote installation. Settings live there, not on the computer running this browser.' : 'The installation running account setup.');
 
     const caps = slot(n, 'caps');
-    const cap = (label, ready, stateText, desc) => {
-      const r = tpl('tpl-cap-row'); r.dataset.state = ready ? 'ready' : 'unavailable';
+    const cap = (label, desc) => {
+      const r = tpl('tpl-cap-row'); r.dataset.state = 'ready';
       slot(r, 'label').textContent = label;
-      const st = slot(r, 'state'); st.dataset.tone = ready ? 'success' : ''; st.textContent = stateText;
+      const st = slot(r, 'state'); st.dataset.tone = 'success'; st.textContent = 'Ready';
       slot(r, 'desc').textContent = desc; caps.append(r);
     };
-    cap('Read mail', true, 'Ready', 'Pimcamp can list and open messages in this mailbox.');
-    cap('Send mail', true, 'Ready', 'Pimcamp can send on your behalf. It only sends when you ask it to.');
-    cap('New-mail notifications', !partial, partial ? 'Not tested' : 'Ready', partial ? 'Setup is complete. Automatic notifications have not been tested.' : 'Pimcamp reacts to new messages as they arrive.');
+    cap('Read mail', 'Pimcamp can list and open messages in this mailbox. The incoming sign-in passed.');
+    cap('Send mail', 'Pimcamp can send on your behalf, and only when you ask it to. The outgoing sign-in passed; no mail was sent.');
 
-    if (partial) {
-      const rem = slot(n, 'remaining'); rem.hidden = false;
-      const body = el('div', { class: 'notice__body' }, [el('p', { class: 'notice__title', text: observe.state === 'unavailable' ? 'New-mail notifications are not verified yet' : 'Mail watching didn’t start' }),
-        el('p', { text: observe.state === 'unavailable' ? 'Your account is saved and setup is complete. Nothing is still running. Notification verification is a separate step; you can return to your accounts now.' : observe.message || 'Your account is saved. Notification verification is a separate step.' })]);
-      const act = el('div', { class: 'check-row__actions' });
-      if (observe.state === 'failed') act.append(btn('Try again', { size: 'small', iconName: 'refresh', onclick: async () => { go('connect', { focus: false }); await runConnect({ retry: true }); } }));
-      body.append(act);
-      rem.append(icon('alert'), body);
-    }
     $('[data-action="go-accounts"]', n).addEventListener('click', () => go('accounts'));
     $('[data-action="add-account"]', n).addEventListener('click', startAdd);
     stage.append(n);
@@ -1530,7 +1640,7 @@
   function setRows(map) {
     for (const [k, v] of Object.entries(map)) state.connect.rows[k] = v;
   }
-  const R = (st, message) => ({ state: st, message });
+  const R = (st, message) => ({ state: st, message, code: null });
 
   function gallery(key) {
     if (!service.isDemo) return;
@@ -1552,6 +1662,13 @@
     switch (key) {
       case 'accounts-empty': demo.accountsScenario = 'empty'; syncDemoControls(); service.reset(); state.accountsLoaded = false; go('accounts'); break;
       case 'accounts-list': demo.accountsScenario = 'both'; syncDemoControls(); service.reset(); state.accountsLoaded = false; go('accounts'); break;
+      case 'accounts-details': {
+        demo.accountsScenario = 'both'; syncDemoControls(); service.reset();
+        state.accounts = fixtureAccounts('both'); state.accountsLoaded = true; // pre-answered, so the details can open synchronously
+        go('accounts');
+        const first = $('.account [data-slot="details"]', stage); if (first) first.open = true;
+        break;
+      }
       case 'choose': state.draft = newDraft(); go('choose'); break;
       case 'details': state.draft = newDraft(); state.draft.method = 'imap'; go('details'); break;
       case 'details-errors': state.draft = newDraft(); state.draft.method = 'imap'; state.draft.email = 'alex@example'; go('details'); $('form', stage).requestSubmit(); break;
@@ -1563,6 +1680,7 @@
       case 'google-cancelled': state.draft = sampleDraft('google'); state.oauth = { status: 'cancelled', byUser: false, identity: null, controller: null }; go('google'); break;
       case 'google-expired': state.draft = sampleDraft('google'); state.oauth = { status: 'expired', identity: null, controller: null }; go('google'); break;
       case 'google-missing': state.draft = sampleDraft('google'); state.installation.oauthClientConfigured = false; demo.oauthClientConfigured = false; syncDemoControls(); go('google'); break;
+      case 'google-failed': state.draft = sampleDraft('google'); state.oauth = { status: 'failed', identity: null, controller: null, message: 'Google authorization could not be verified. Try again or check the installation’s Google application settings.' }; go('google'); break;
       case 'google-denied': state.draft = sampleDraft('google'); state.oauth = { status: 'denied-policy', identity: null, controller: null }; go('google'); break;
       case 'google-authorized': state.draft = sampleDraft('google'); state.oauth = { status: 'authorized', identity: 'demo@example.com', controller: null }; go('google'); break;
       case 'google-mismatch': state.draft = sampleDraft('google'); state.oauth = { status: 'authorized', identity: 'different.person@example.com', controller: null }; go('google'); break;
@@ -1580,11 +1698,19 @@
       case 'review-google-remote': state.draft = sampleDraft('google'); state.draft.google.identity = 'demo@example.com'; state.installation = { host: demo.installation.host.trim() || 'demo-host.example', remote: true, oauthClientConfigured: true }; go('review'); break;
       case 'connect-checking': state.draft = sampleDraft('imap'); go('connect'); runConnect(); break;
       case 'connect-incoming-failed': state.draft = sampleDraft('imap'); setRows({ incoming: R('failed', 'We couldn’t sign in to incoming mail. Check your username and password.'), outgoing: R('passed', 'Signed in to smtp.example.com. No mail was sent.') }); go('connect'); break;
+      case 'connect-storage-failed': {
+        state.draft = sampleDraft('imap');
+        const message = 'Could not save to the encrypted password vault on this host. Unlock it or check that Secret Service is running.';
+        setRows({ incoming: { state: 'failed', message, code: 'storage' } });
+        state.connect.problem = { kind: 'storage', message };
+        go('connect'); break;
+      }
       case 'connect-save-failed': state.draft = sampleDraft('imap'); setRows({ incoming: R('passed', 'Signed in to imap.example.com as demo@example.com.'), outgoing: R('passed', 'Signed in to smtp.example.com. No mail was sent.'), save: R('failed', 'The settings couldn’t be saved. Nothing was changed. Try again; if it keeps failing, the installation may be out of disk space or read-only.') }); go('connect'); break;
-      case 'connect-observe-unavailable': state.draft = sampleDraft('imap'); state.connect.saved = true; state.connect.accountId = 'preview-gallery'; setRows({ incoming: R('passed', 'Signed in to imap.example.com as demo@example.com.'), outgoing: R('passed', 'Signed in to smtp.example.com. No mail was sent.'), save: R('passed', 'Settings saved for demo@example.com.'), observe: R('unavailable', 'Mail watching isn’t installed on this installation yet. Reading and sending mail still work.') }); go('connect'); break;
+      case 'connect-saved': state.draft = sampleDraft('imap'); state.connect.saved = true; state.connect.accountId = 'preview-gallery'; setRows({ incoming: R('passed', 'Signed in to imap.example.com as demo@example.com.'), outgoing: R('passed', 'Signed in to smtp.example.com. No mail was sent.'), save: R('passed', 'Settings saved for demo@example.com.') }); go('connect'); break;
       case 'connect-cancelled': state.draft = sampleDraft('imap'); state.connect.cancelled = true; setRows({ incoming: R('passed', 'Signed in to imap.example.com as demo@example.com.') }); go('connect'); break;
-      case 'done': state.draft = sampleDraft('imap'); state.connect.saved = true; setRows({ incoming: R('passed', ''), outgoing: R('passed', ''), save: R('passed', ''), observe: R('passed', 'Pimcamp will notice new mail for this account as it arrives.') }); go('done'); break;
-      case 'done-partial': state.draft = sampleDraft('imap'); state.connect.saved = true; state.connect.accountId = 'preview-gallery'; setRows({ incoming: R('passed', ''), outgoing: R('passed', ''), save: R('passed', ''), observe: R('unavailable', 'Mail watching isn’t installed on this installation yet. Reading and sending mail still work.') }); go('done'); break;
+      case 'done': state.draft = sampleDraft('imap'); state.connect.saved = true; setRows({ incoming: R('passed', ''), outgoing: R('passed', ''), save: R('passed', '') }); go('done'); break;
+      case 'done-google': state.draft = sampleDraft('google'); state.draft.google.identity = 'demo@example.com'; state.connect.saved = true; setRows({ incoming: R('passed', ''), outgoing: R('passed', ''), save: R('passed', '') }); go('done'); break;
+      case 'done-remote': state.draft = sampleDraft('imap'); state.installation = { host: demo.installation.host.trim() || 'demo-host.example', remote: true, oauthClientConfigured: true }; state.connect.saved = true; setRows({ incoming: R('passed', ''), outgoing: R('passed', ''), save: R('passed', '') }); go('done'); break;
     }
   }
 

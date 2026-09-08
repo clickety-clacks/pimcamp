@@ -62,6 +62,65 @@ class SetupServiceTests(unittest.TestCase):
         for backend in ("imap", "smtp"):
             self.service.check(setup_id, draft, backend)
 
+    def test_active_attempt_refreshes_idle_deadline(self):
+        attempt = self.service.attempts[self.setup_id]
+        attempt.created -= 800
+        old = attempt.created
+        self.service.check(self.setup_id, self.draft, 'imap')
+        self.assertGreater(attempt.created, old + 700)
+
+    def test_expired_attempt_is_structured_and_cleans_temporary_keys(self):
+        self.checked()
+        self.service.attempts[self.setup_id].created -= 901
+        with self.assertRaises(SetupError) as raised:
+            self.service.commit(self.setup_id, self.draft)
+        self.assertEqual(raised.exception.code, 'setup_expired')
+        self.assertEqual(self.credentials.keys, {})
+        self.assertEqual(self.service.list_accounts(), [])
+
+    def test_saved_receipt_survives_normal_setup_expiry(self):
+        self.checked()
+        first = self.service.commit(self.setup_id, self.draft)
+        self.service.attempts[self.setup_id].created -= 901
+        retry = self.service.commit(self.setup_id, self.draft)
+        self.assertEqual(retry['accountId'], first['accountId'])
+        self.assertEqual(len(self.service.list_accounts()), 1)
+        self.assertEqual(len(self.credentials.keys), 3)
+
+    def test_save_status_reconciles_only_matching_completed_attempt(self):
+        self.checked()
+        self.assertFalse(self.service.save_status(self.setup_id, self.draft)['ok'])
+        first = self.service.commit(self.setup_id, self.draft)
+        calls = len(self.calls)
+        self.assertEqual(self.service.save_status(self.setup_id, self.draft)['accountId'], first['accountId'])
+        self.assertFalse(self.service.save_status(self.setup_id, {**self.draft, 'name':'Changed'})['ok'])
+        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(len(self.service.list_accounts()), 1)
+
+    def test_missing_or_retired_saved_receipt_does_not_authorize_automatic_renewal(self):
+        with self.assertRaises(SetupError) as missing:
+            self.service.commit('unknown', self.draft)
+        self.assertEqual(missing.exception.code, 'setup_unavailable')
+        self.checked()
+        self.service.commit(self.setup_id, self.draft)
+        self.service.attempts[self.setup_id].created -= 86401
+        with self.assertRaises(SetupError) as retired:
+            self.service.commit(self.setup_id, self.draft)
+        self.assertEqual(retired.exception.code, 'setup_unavailable')
+        self.assertEqual(len(self.service.list_accounts()), 1)
+
+    def test_save_status_does_not_hide_failed_finalization(self):
+        self.checked()
+        self.service.runtime_config = Path(self.temp.name) / 'runtime.json'
+        with patch.object(self.service.store, 'ensure_runtime_default', side_effect=OSError('fixture')):
+            with self.assertRaises(OSError):
+                self.service.commit(self.setup_id, self.draft)
+        self.assertTrue(self.service.attempts[self.setup_id].saved)
+        self.assertFalse(self.service.save_status(self.setup_id, self.draft)['ok'])
+        self.assertTrue(self.service.commit(self.setup_id, self.draft)['ok'])
+        self.assertTrue(self.service.save_status(self.setup_id, self.draft)['ok'])
+        self.assertEqual(len(self.service.list_accounts()), 1)
+
     def test_complete_imap_setup_publishes_matching_real_config_files(self):
         self.checked()
         result = self.service.commit(self.setup_id, self.draft)

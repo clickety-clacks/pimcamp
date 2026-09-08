@@ -22,6 +22,116 @@ Deep links for review: `index.html#demo=<state>&theme=<system|light|dark>&latenc
 The `<state>` keys are the values in the “Jump to a state” list under Demo controls, for example
 `#demo=google-mismatch&theme=dark&latency=0`.
 
+## Revision 4 (2026-09-08): honest completion, Google recovery, vault language
+
+Cleanup after real onboarding failures. Same tokens, screen order and service boundary; four behaviours
+change.
+
+**1. A saved account is a finished setup.** The connect screen runs three steps (incoming sign-in,
+outgoing sign-in, save) and goes straight to Success after the save. `observationReadiness` is no
+longer called from the setup screens; nothing waits on, spins for, or warns about mail watching.
+Success shows a green “Account connected”, a small summary (address, account name, Google identity
+or sign-in method, **Saved on `<host>`**), two capabilities (Read mail, Send mail) and one neutral
+help line linking the next action to Accounts. Notification information appears only in account details. There
+is no yellow state, no “partial” variant and no `remaining` notice any more. The host comes from
+`state.installation.host` whenever the installation reports one (remote or not), else “this
+installation”.
+
+The truthful notification information moved to the **accounts hub**: every row has a “Details”
+disclosure (`<details>` using the existing `.disclosure` styling) listing sign-in method, incoming and
+outgoing servers when the record has them, the host when known, the sign-in check result, and
+**New-mail notifications: Not tested** with the explanation that setup checks sign-in only and sends
+no test mail. `listAccounts` records carry no readiness today; the UI never infers “ready”. If a record
+ever carries an explicit `observation: { state: 'verified', message }` the pill says “Verified”;
+anything else stays “Not tested” (an `observation.message` is shown verbatim as the explanation).
+There is no test button and no automatic test mail. An open details area survives “Check connection”.
+
+**2. Google registration and recovery.** Part 2 of the guided setup now has five items; the new
+item 3, **Test users: add `<entered address>`**, is its own checklist step: it names the address
+being connected (also in a copyable `<code>` block), links Audience, says to Save and then check that
+the address appears in Google’s list, and says outright that Pimcamp cannot verify this Google-side
+setting. It applies only when the audience is External and publishing status is Testing;
+Internal/published apps do not use that checklist. The Google
+screen gained an always-present **“Trouble with Google sign-in?”** disclosure with five cases: the
+Google window stops at an error and this page never changes (no callback arrives: Cancel here, fix,
+Try again); “has not completed the Google verification process” / `access_denied` usually means the
+app is in Testing and the address is missing from Test users, not necessarily an organization block
+(with an Open Audience link); “app is blocked / admin hasn’t approved” (organization policy, ask the
+administrator, IMAP alternative); “only for its organization” (Internal audience); and Google offering
+a different account (the mismatch guard is unchanged). It opens automatically for `denied-policy`,
+`failed`, `expired` and a non-user `cancelled`. The `denied-policy` panel reports the backend's
+explicit organization-policy restriction. Generic `access_denied` is not classified as that policy;
+the shared help covers testing and other causes. The “Waiting for Google” state
+says what to do when the popup shows an error instead of sending the user back.
+
+**3. Password vault language.** One shared template, `tpl-vault-help` (“About the encrypted password
+vault”), renders on Review, on the client-file part, inside a storage failure on the connect screen,
+and opens on its own after a storage failure. It says: the vault is encrypted storage on the mail host
+(named when known); it has its own password separate from the email password; a **new** vault
+password is created only when the host has no vault yet, an existing vault is unlocked with its
+existing password and is never replaced; the vault password is never typed into chat, email or this
+page; and this page cannot create or unlock the vault, so the agent or operator repairs it on the host
+with the installation’s existing provider while the entered details stay put. No unlock endpoint,
+form or button exists in the UI.
+
+A **storage failure during connect** (thrown error or `ok: false` with `code: 'storage'`, or a
+message mentioning the keyring, vault, Secret Service or protected storage; see `failureCode`) is
+shown as a screen-level problem, not a sign-in problem: title “Your password couldn’t be stored yet”,
+a danger notice “The password vault on `<host>` needs attention” with the service message verbatim,
+the instruction that the email password is not the issue and need not be re-entered, the vault help
+(open), and **Try again** (re-runs only non-passed steps). The failed row carries no “Edit incoming
+settings” shortcut in this case. The same classification gives the client-file part a “The password
+vault couldn’t store the client secret” title with the chosen file kept for retry. An `expired`
+failure (`code: 'expired'` or the installation’s “This setup expired” message) is shown as “This setup
+attempt expired” with the details kept and “Run checks again” for IMAP or explicit Google sign-in
+for Google. Integration recognizes `credential_storage`, `setup_expired`, `google_signin_required`
+and `setup_unavailable` codes. An unavailable receipt offers Check Accounts, not a blind save retry.
+The transport renews only explicitly known-expired, unsaved attempts. After a lost save response it
+queries `saveStatus` read-only; it never replays an ambiguous write automatically.
+
+**4. Fields survive recoverable errors.** Unchanged in principle (the draft object is the source of
+truth), tightened in two places: the whole-screen “Setup needs attention” state now says the entered
+details are kept and, when reached from “Check again” on the Google screen, offers Back to Google
+plus a Try again that repeats the check instead of dropping to the accounts list; Success and Review
+both show the Google-authorized identity next to the entered address. Passwords remain in memory
+only, never in browser storage.
+
+Hooks added or changed in this revision (the parent’s test may rely on them):
+
+- Templates: `tpl-vault-help`; slots `details`, `details-for`, `detail-list` (account row), `help`,
+  `help-email` (Google screen), `test-user-step`, `test-user-email` (platform part), `vault`
+  (Review and import part; replaced by the rendered `tpl-vault-help`, whose root slot is
+  `vault-help` and host slot `vault-host`), `summary` and `note` (Success). Removed: `remaining` on
+  Success and the `observe` check row; `tpl-check-row`/`tpl-cap-row` markup is unchanged.
+- State: `state.connect.rows` = `{ incoming, outgoing, save }` (no `observe`), each row
+  `{ state, message, code }`; `state.connect.problem` = `{ kind: 'storage'|'expired', message } | null`.
+  `state.oauth.message` is set for `failed`.
+- Demo: `outcomes.observe` and the “Mail watching” control are gone; `outcomes.incoming` gained
+  `storage`, `outcomes.save` gained `expired`, `googleOutcome` gained `failed`. The demo
+  `save-failed` registration outcome now throws a vault-worded error with `code: 'storage'`.
+- Gallery: added `accounts-details`, `google-failed`, `connect-storage-failed`, `connect-saved`,
+  `done-google`, `done-remote`; removed `connect-observe-unavailable` and `done-partial` (there is no
+  partial success). `google-denied` is relabelled “access denied”.
+- Copy the browser review currently asserts and that changed: Success no longer contains
+  “New-mail notifications are not verified yet”, “Not tested”, or any `.notice--warning`.
+  `state.connect.rows.observe` no longer exists, so a journey that sets
+  `demo.outcomes.observe` and reads that row must instead open the account’s details on the hub and
+  look for the “Not tested” pill. `connect-observe-unavailable` in the “no spinner after completion”
+  check maps to `connect-saved`.
+- CSS: `.disclosure--help`, `.disclosure__list`, `.help-item`, `.help-item__title`,
+  `.account__details`, `.summary--compact`, `.guide__value`, `.done__note`. Removed
+  `.done__art[data-tone]`.
+
+**Status of revision 4.** Authored directly with Fable 5.1 and verified by the integration pass:
+234 layout checks (39 states, three widths, two themes), 30 browser interaction checks, ten
+browser-to-server fixture checks, and nine transport lifecycle checks passed. The standard Python
+suite ran 140 tests: 137 passed, three live-mail tests explicitly skipped. The separately invoked
+live adapter journey also skipped; these checks sent no mail and do not prove notification delivery.
+Recovery checks cover structured vault errors, expired Google sign-in, unavailable save receipts,
+Google's saved test-user checkpoint, visible identity/host, and no notification dependency at setup.
+The internal `saveStatus` action reconciles a matching saved receipt without writing; no new public
+mail operation, server, port or browser credential storage was introduced.
+
 ## Revision 3 (2026-09-08): guided Google sign-in setup
 
 The Google screen’s “no OAuth client” state used to be a dead end: a warning, a dashed “Administrator
@@ -149,15 +259,15 @@ screen order and every JavaScript contract, and changes the composition:
 
 | # | Screen | `state.screen` | States covered |
 | --- | --- | --- | --- |
-| 1 | Accounts / welcome | `accounts` | loading, empty (“Connect your email”), list with Connected / Needs reconnect, per-row Checking… |
+| 1 | Accounts / welcome | `accounts` | loading, empty (“Connect your email”), list with Connected / Needs reconnect, per-row Checking…, per-row “Details” disclosure (servers, host, sign-in check result, notifications “Not tested”) |
 | 2 | Choose connection | `choose` | Google / Gmail, IMAP & SMTP; previous choice marked with `aria-current` |
 | 3 | Account details | `details` | valid, field errors (format, duplicate address, name length) |
 | 4 | IMAP & SMTP | `imap` | defaults (993/TLS, 465/TLS), STARTTLS port follow, editable presets, shared vs separate outgoing login, password reveal, field errors |
-| 5 | Google | `google` | ready, consent in progress (cancellable), cancelled (by user / at Google), expired, organization policy denied, OAuth client missing (explains the one-time registration; primary “Set up Google sign-in” or “Continue setting up…”), authorized matching account, authorized different account (explicit choice) |
+| 5 | Google | `google` | ready, consent in progress (cancellable, says what to do if the popup stops at an error), cancelled (by user / at Google), could not finish, expired, access denied (neutral: Testing test-user or organization policy), OAuth client missing (explains the one-time registration; primary “Set up Google sign-in” or “Continue setting up…”), authorized matching account, authorized different account (explicit choice); “Trouble with Google sign-in?” help in every state |
 | 5a | Google sign-in setup | `google-setup` | intro, part 1 project, part 2 app and client, part 3 client file (storage not ready, file rejected, saving, save failed, unconfirmed), saved (incl. already configured, refresh failed), status check failed |
-| 6 | Review and connect | `review` | IMAP summary, Google summary, remote installation host row, reconnect note. No secrets rendered. |
-| 7 | Connection results | `connect` | four rows × waiting / checking / passed / failed / unavailable; cancel while checking; retry failed only; per-row repair actions; save failed with nothing changed |
-| 8 | Success | `done` | full success, partial (mail watching unavailable or failed) with a repair action, back / add another |
+| 6 | Review and connect | `review` | IMAP summary, Google summary (authorized identity), remote installation host row, reconnect note, vault help disclosure. No secrets rendered. |
+| 7 | Connection results | `connect` | three rows (incoming sign-in, outgoing sign-in, save) × waiting / checking / passed / failed; cancel while checking; retry failed only; per-row repair actions; save failed with nothing changed; password vault refused (screen-level notice, no password re-entry); setup attempt expired |
+| 8 | Success | `done` | one state: address, account name, identity or sign-in method, host, Read/Send ready, link to account management, back / add another |
 
 The progress rail shows five steps (Connection, Details, Settings, Review, Connect). On the accounts
 screen the rail column holds a short “What you’ll need” note instead of steps, so the two-column shell
@@ -226,12 +336,15 @@ partial ring and the visible “Checking…” text carries the meaning.
   the file input. The part reached is remembered in `state.googleSetup.step`, so returning later says
   “Continue setting up Google sign-in” and resumes there; the installation’s status is re-read on every
   entry. Announcements say “<title>. Google sign-in setup, part N of 3.”
-- **Connection results** run incoming sign-in, outgoing sign-in, save, then mail watching. Nothing is
-  written unless both sign-ins pass. Cancel is available while checking and hidden during the save.
-  Retry re-runs only rows that are not `passed`. Failed rows carry a repair button that returns to the
-  right field. Copy states explicitly that sign-in is not delivery and that no mail is sent.
-- **Success** is only shown after a successful save. Partial success keeps the unavailable capability
-  visible with a plain-language explanation and a repair action.
+- **Connection results** run incoming sign-in, outgoing sign-in, then save. Nothing is written unless
+  both sign-ins pass. Cancel is available while checking and hidden during the save. Retry re-runs
+  only rows that are not `passed`. Failed sign-in rows carry a repair button that returns to the right
+  field, except when the failure is classified as a vault (`storage`) or `expired` problem: then a
+  screen-level notice explains the host-side cause, keeps every entered value, and offers Try again.
+  Copy states explicitly that sign-in is not delivery and that no mail is sent. Mail watching is not a
+  step.
+- **Success** is only shown after a successful save and has no partial variant. Notifications are
+  described on the accounts hub as “Not tested” until something explicit says otherwise.
 - **Duplicate submission** is prevented by state (`connect.running`, `oauth.status`) rather than by
   disabling navigation; Back and the brand link stay usable except while a save is in flight.
 - **Live regions.** `#live-status` (polite) announces screen changes, step numbers, and check results;
@@ -271,13 +384,13 @@ data and receives an `AbortSignal` where cancellation is meaningful.
 
 | Method | Purpose | Returns |
 | --- | --- | --- |
-| `listAccounts()` | Existing accounts for the hub | `[{ id, address, name, method, status: 'connected'|'needs-reconnect'|'unknown', note, incoming?, outgoing? }]` (no secrets) |
+| `listAccounts()` | Existing accounts for the hub | `[{ id, address, name, method, status: 'connected'|'needs-reconnect'|'unknown', note, incoming?, outgoing?, observation? }]` (no secrets). `observation` is optional and only `{ state: 'verified', message }` changes the “Not tested” pill; the UI never infers readiness. |
 | `beginSetup(accountId?)` | Start a setup, learn installation facts | `{ setupId, installation: { host, remote, oauthClientConfigured } }` |
 | `validateFields(step, draft, ctx)` | Field validation (`details`, `imap`) | `{ [fieldId]: message }` |
 | `beginOAuth({ email }, signal)` | Start consent; resolves when the callback lands or the flow ends | `{ status: 'authorized'|'cancelled'|'expired'|'denied-policy', identity?, byUser? }` |
-| `checkIncoming(draft, signal)` / `checkOutgoing(draft, signal)` | Authenticate only; never fetch or send | `{ ok, code?: 'auth'|'unreachable', message }` |
-| `commitAccount(draft, signal)` | Write account-scoped config and credential reference, additive | `{ ok, accountId?, message }` |
-| `observationReadiness(accountId, signal)` | Ask the observation adapter | `{ state: 'passed'|'unavailable'|'failed', message }` |
+| `checkIncoming(draft, signal)` / `checkOutgoing(draft, signal)` | Authenticate only; never fetch or send | `{ ok, code?: 'auth'|'unreachable'|'storage'|'expired', message }`. A thrown error with `publicMessage` (and optionally `code`) is shown the same way; `storage`/`expired` are also recognised from the message text. |
+| `commitAccount(draft, signal)` | Write account-scoped config and credential reference, additive | `{ ok, accountId?, code?, message }` |
+| `observationReadiness(accountId, signal)` | Ask the observation adapter | `{ state: 'passed'|'unavailable'|'failed', message }`. Kept on the boundary; **not called by the setup screens since revision 4.** |
 | `checkAccount(id)` | Re-check an existing account | updated account record |
 | `googleApplicationStatus()` | Whether this installation is registered with Google and whether the Ortie executable is available (not a vault-readiness check) | `{ configured: boolean, helperAvailable: boolean, clientId?: string }`. `clientId` is Google’s public identifier; no secret is ever returned. Only explicit `helperAvailable: true` means available; missing/empty `clientId` means “not reported”. |
 | `configureGoogleApplication({ credentialsJson })` | Validate a Desktop app client file, store its secret in the protected vault, persist the public configuration | `{ configured: true, clientId: string }`. Anything else (a throw, or a result without `configured: true`) is treated as *not confirmed*: the UI shows a retry and a “Check what was saved” action and never claims success. Saving connects no account. |
@@ -318,8 +431,9 @@ Expectations for the real implementation, from the spec:
   never shows tracebacks or internal identifiers.
 
 **View model** (`state`): `screen`, `accounts`, `installation`, `draft` (nonsecret form state plus
-in-memory passwords), `oauth` (`status`, `identity`, `controller`), `connect` (`rows`, `running`,
-`cancellable`, `saved`, `accountId`), `googleSetup` (`step`, `app`, `statusError`, `submitting`,
+in-memory passwords), `oauth` (`status`, `identity`, `controller`, `message`), `connect` (`rows`
+of `{ state, message, code }` for `incoming`, `outgoing`, `save`; `running`, `cancellable`, `saved`,
+`accountId`, `problem`), `googleSetup` (`step`, `app`, `statusError`, `submitting`,
 `error`, `token`, `refreshFailed`, `alreadyConfigured`; never file contents). Renderers read from
 `state` and templates; they never call the service directly except through the handlers in the
 navigation section.
@@ -343,7 +457,8 @@ The side sheet (top-right button) drives the demo service:
 - Installation host and remote flag, whether a Google OAuth client is configured, and whether the
   Google sign-in helper is available.
 - Simulated outcomes for saving the Google registration (saved / rejected / fails / never answers),
-  Google authorization, incoming and outgoing sign-in, saving, and mail watching. To exercise the file
+  Google authorization (including denied and could-not-finish), incoming sign-in (including a vault
+  refusal), outgoing sign-in, and saving (including an expired attempt). To exercise the file
   picker in the preview, use an `installed` object containing a Google-shaped `client_id` and a
   nonempty `client_secret` (at most 4096 characters, no NUL). A file with a `web` block is rejected.
   No sample client file ships.
@@ -379,11 +494,12 @@ chromium --headless=new --disable-gpu --hide-scrollbars --virtual-time-budget=40
   "file://$PWD/ui/onboarding/index.html#demo=imap&theme=dark&latency=0"
 ```
 
-Suggested set: `accounts-empty`, `accounts-list`, `choose`, `details-errors`, `imap`, `imap-errors`,
-`google-progress`, `google-missing`, `google-mismatch`, `google-setup-intro`, `google-setup-platform`,
-`google-setup-import`, `google-setup-import-invalid`, `google-setup-storage-missing`,
-`google-setup-save-failed`, `google-setup-saved`, `review-imap`, `connect-incoming-failed`,
-`connect-observe-unavailable`, `done`, `done-partial`, each at 1280 and 375px, light and dark.
+Suggested set: `accounts-empty`, `accounts-list`, `accounts-details`, `choose`, `details-errors`,
+`imap`, `imap-errors`, `google-progress`, `google-denied`, `google-missing`, `google-mismatch`,
+`google-setup-intro`, `google-setup-platform`, `google-setup-import`, `google-setup-import-invalid`,
+`google-setup-storage-missing`, `google-setup-save-failed`, `google-setup-saved`, `review-imap`,
+`connect-incoming-failed`, `connect-storage-failed`, `done`, `done-remote`, each at 1280 and 375px,
+light and dark.
 
 Gallery states added in revision 3 (all existing names are unchanged): `google-setup-intro`,
 `google-setup-storage-missing`, `google-setup-unavailable`, `google-setup-project`,
@@ -419,5 +535,10 @@ Google console and real mailbox consent remain unverified.
 - `::file-selector-button` styling needs Chromium 89+, Firefox 82+, Safari 14.1+; older browsers show
   the native button, which is still usable.
 - Account check on the hub uses fixture outcomes in preview and lower authentication checks in live mode.
-- The `.disclosure` component is styled but unused: the current form has no advanced options section.
-  It is kept so a future “Advanced options” block can use progressive disclosure without new CSS.
+- The `.disclosure` component now backs the account details, the Google recovery help and the vault
+  help (`.disclosure--help`). The plain variant is still free for a future “Advanced options” block.
+- The Google recovery help quotes Google’s error wording (“has not completed the Google verification
+  process”, `access_denied`, “This app is blocked”) as of the Google Auth Platform layout. If Google
+  rewords those pages, the `help` disclosure in `tpl-google` is the only place to update.
+- The accounts hub shows the host only after a setup has reported it (`state.installation.host`);
+  before that the “Saved on” row is omitted rather than guessed.

@@ -94,6 +94,7 @@
         <optgroup label="Accounts">
           <option value="accounts-empty">Accounts · empty</option>
           <option value="accounts-list">Accounts · connected and needs-reconnect</option>
+          <option value="accounts-details">Accounts · details expanded</option>
         </optgroup>
         <optgroup label="Setup">
           <option value="choose">Choose connection</option>
@@ -109,7 +110,8 @@
           <option value="google-cancelled">Google · cancelled</option>
           <option value="google-expired">Google · expired</option>
           <option value="google-missing">Google · no OAuth client configured</option>
-          <option value="google-denied">Google · organization policy denied</option>
+          <option value="google-failed">Google · could not finish</option>
+          <option value="google-denied">Google · access denied</option>
           <option value="google-authorized">Google · authorized, matching account</option>
           <option value="google-mismatch">Google · authorized, different account</option>
         </optgroup>
@@ -130,13 +132,15 @@
           <option value="review-google-remote">Review · Google on a remote installation</option>
           <option value="connect-checking">Connect · checking</option>
           <option value="connect-incoming-failed">Connect · incoming sign-in failed</option>
+          <option value="connect-storage-failed">Connect · password vault refused the password</option>
           <option value="connect-save-failed">Connect · save failed</option>
-          <option value="connect-observe-unavailable">Connect · watching unavailable</option>
+          <option value="connect-saved">Connect · saved</option>
           <option value="connect-cancelled">Connect · cancelled</option>
         </optgroup>
         <optgroup label="Done">
           <option value="done">Account connected</option>
-          <option value="done-partial">Account connected · partial</option>
+          <option value="done-google">Account connected · Google</option>
+          <option value="done-remote">Account connected · remote installation</option>
         </optgroup>
       </select>
     </div>
@@ -176,16 +180,15 @@
         <option value="authorized-different">Authorized, a different address</option>
         <option value="cancelled">Cancelled at Google</option>
         <option value="expired">Expired before completion</option>
-        <option value="denied-policy">Denied by organization policy</option>
+        <option value="denied-policy">Denied (access_denied or organization policy)</option>
+        <option value="failed">Fails (no callback could be verified)</option>
       </select>
       <label class="field__label" for="demo-incoming">Incoming sign-in</label>
-      <select id="demo-incoming" data-demo="outcomes.incoming"><option value="pass">Passes</option><option value="fail">Fails (rejected credentials)</option><option value="unreachable">Fails (server unreachable)</option></select>
+      <select id="demo-incoming" data-demo="outcomes.incoming"><option value="pass">Passes</option><option value="fail">Fails (rejected credentials)</option><option value="unreachable">Fails (server unreachable)</option><option value="storage">Fails (password vault refused the password)</option></select>
       <label class="field__label" for="demo-outgoing">Outgoing sign-in</label>
       <select id="demo-outgoing" data-demo="outcomes.outgoing"><option value="pass">Passes</option><option value="fail">Fails (rejected credentials)</option></select>
       <label class="field__label" for="demo-save">Saving configuration</label>
-      <select id="demo-save" data-demo="outcomes.save"><option value="pass">Passes</option><option value="fail">Fails</option></select>
-      <label class="field__label" for="demo-observe">Mail watching</label>
-      <select id="demo-observe" data-demo="outcomes.observe"><option value="pass">Ready</option><option value="unavailable">Unavailable (adapter not installed)</option><option value="fail">Fails to start</option></select>
+      <select id="demo-save" data-demo="outcomes.save"><option value="pass">Passes</option><option value="fail">Fails</option><option value="expired">Fails (setup attempt expired)</option></select>
       <label class="field__label" for="demo-latency">Simulated delay <span class="field__hint">milliseconds per operation</span></label>
       <input id="demo-latency" type="text" inputmode="numeric" data-demo="latency">
     </fieldset>
@@ -253,6 +256,12 @@
         <button type="button" class="btn btn--secondary btn--small" data-action="check-account"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check connection</button>
         <button type="button" class="btn btn--ghost btn--small" data-action="reconnect-account">Reconnect</button>
       </div>
+      <details class="disclosure disclosure--help account__details" data-slot="details">
+        <summary><span>Details</span><span class="visually-hidden" data-slot="details-for"></span></summary>
+        <div class="disclosure__body">
+          <dl class="summary summary--compact" data-slot="detail-list"></dl>
+        </div>
+      </details>
     </li>
   </template>
 
@@ -421,6 +430,34 @@
 
       <div class="panel" data-slot="state"></div>
 
+      <!-- Recovery help. Always present; opened by the renderer when Google refused or never called back. -->
+      <details class="disclosure disclosure--help" data-slot="help">
+        <summary><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Trouble with Google sign-in?</span></summary>
+        <div class="disclosure__body">
+          <div class="help-item">
+            <p class="help-item__title">Google shows an error and this page doesn’t change</p>
+            <p>When Google stops at an error, it never sends you back here, so this page keeps waiting. Close the Google window, choose Cancel here, fix the cause with the notes below, then choose Try again. Nothing is saved while you wait.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">“Pimcamp has not completed the Google verification process” or “Error 403: access_denied”</p>
+            <p>This usually means the registration for this installation is in Testing at Google and <span data-slot="help-email"></span> isn’t on its Test users list. It doesn’t necessarily mean your organization blocked the app. Whoever registered this installation opens Audience in Google Cloud console, adds <span data-slot="help-email"></span> under Test users, saves, and checks that the address appears in Google’s list. Then choose Try again here. Pimcamp can’t check that setting for you.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">“This app is blocked” or “Your admin hasn’t approved this app”</p>
+            <p>A Google Workspace organization can restrict which apps may access mail. Ask its administrator to allow this app; Pimcamp can’t work around that. If the organization permits app passwords, IMAP &amp; SMTP is an alternative.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">Google says the app is only for its organization</p>
+            <p>The registration was made with the Internal audience, which accepts only mailboxes inside that Workspace organization. A mailbox outside it needs a registration with the External audience.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">Google offers a different account</p>
+            <p>Choose <span data-slot="help-email"></span> in Google’s account picker. If you approve a different account, Pimcamp shows which one Google authorized and asks you to choose; it never switches silently.</p>
+          </div>
+        </div>
+      </details>
+
       <div class="actions">
         <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
         <span class="actions__spacer"></span>
@@ -464,7 +501,7 @@
           <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-id"/></svg></span>
           <div class="guide__body">
             <p class="guide__title">Describe the app and create a Desktop app client</p>
-            <p class="guide__text">You name the registration, say who may use it, list the mail permission it asks for, and create a client. Google then offers a small file to download.</p>
+            <p class="guide__text">You name the registration, say who may use it, add the mailbox you’re connecting as a test user if Google puts the app in Testing, list the mail permission it asks for, and create a client. Google then offers a small file to download.</p>
           </div>
         </li>
         <li class="guide__item">
@@ -523,15 +560,26 @@
               <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
               <div class="notice__body">
                 <p class="notice__title">External apps start in Testing</p>
-                <p>Add the address of each mailbox you’ll connect under Test users, or Google will refuse the sign-in. While the app is in Testing, Google ends mail access after 7 days and you will need to reconnect the account. Publishing the app for longer-lived access is Google’s own process; Pimcamp can’t shorten or skip it.</p>
+                <p>While the app is in Testing, only listed test users can sign in (next step), and Google ends mail access after 7 days, so you will need to reconnect the account. Publishing the app for longer-lived access is Google’s own process; Pimcamp can’t shorten or skip it.</p>
                 <p>If your organization restricts which apps may access mail, ask its administrator to allow this one rather than working around the policy.</p>
               </div>
             </div>
             <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
           </div>
         </li>
-        <li class="guide__item">
+        <li class="guide__item" data-slot="test-user-step">
           <span class="guide__marker" aria-hidden="true">3</span>
+          <div class="guide__body">
+            <p class="guide__title">Test users: add <span data-slot="test-user-email"></span></p>
+            <p class="guide__text"><strong>If the audience is External and publishing status is Testing</strong>, Google refuses sign-in from an address that isn’t on the Test users list. On the Audience page, find <strong>Test users</strong>, choose <strong>Add users</strong>, and enter exactly the address you’re connecting. Published apps do not use this testing checklist:</p>
+            <p class="guide__value"><code data-slot="test-user-email"></code></p>
+            <p class="guide__text"><strong>Save</strong>, then check that the address appears in Google’s list before you leave the page; an entry that wasn’t saved silently disappears. Pimcamp can’t check this Google-side setting for you, so this step is the one to revisit if Google later says the app isn’t verified.</p>
+            <p class="guide__text"><strong>If you chose Internal</strong>, there is no Test users list and there is nothing to add here.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">4</span>
           <div class="guide__body">
             <p class="guide__title">Data access</p>
             <p class="guide__text">Add the Gmail permission Pimcamp uses to read, send and watch mail. Choose Add or remove scopes and add <code>https://mail.google.com/</code>. Google describes it as reading, composing, sending and permanently deleting mail; Pimcamp only performs the mail actions you ask for.</p>
@@ -539,7 +587,7 @@
           </div>
         </li>
         <li class="guide__item">
-          <span class="guide__marker" aria-hidden="true">4</span>
+          <span class="guide__marker" aria-hidden="true">5</span>
           <div class="guide__body">
             <p class="guide__title">Create a Desktop app client</p>
             <p class="guide__text">Open Clients and choose Create client. Set the application type to <strong>Desktop app</strong> and name it. When Google shows the new client, choose Download JSON and keep that file private; it’s what you bring back in the next part. A Desktop app client needs no redirect address.</p>
@@ -557,7 +605,7 @@
         <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
         <div class="notice__body">
           <p class="notice__title">The Google sign-in helper is missing</p>
-          <p>Ask the agent or installation owner to install Ortie 2.2.0 and reopen setup with its path, then choose Check again. The file will not be sent while the helper is unavailable. An unlocked encrypted password vault is also required when saving.</p>
+          <p>Ask the agent or installation owner to install Ortie 2.2.0 and reopen setup with its path, then choose Check again. The file will not be sent while the helper is unavailable. An unlocked encrypted password vault on the host is also required when saving; see “About the encrypted password vault” below.</p>
           <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="recheck-storage"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
         </div>
       </div>
@@ -576,7 +624,8 @@
           <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="check-app-status"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check what was saved</button></div>
         </div>
       </div>
-      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Pimcamp sends the file’s contents once to this installation. The installation checks that it describes a Desktop app client, keeps the secret part in protected storage, and remembers only the public client ID. Nothing from the file is shown here or kept in this browser.</span></p>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Pimcamp sends the file’s contents once to this installation. The installation checks that it describes a Desktop app client, keeps the secret part in the encrypted password vault on the host, and remembers only the public client ID. Nothing from the file is shown here or kept in this browser.</span></p>
+      <div data-slot="vault"></div>
     </form>
   </template>
 
@@ -590,7 +639,7 @@
           <p>The registration is stored. On the Google sign-in page, choose Check again so it picks up the new registration.</p>
         </div>
       </div>
-      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>If the app is in Testing at Google, each mailbox’s access ends after 7 days and you will need to reconnect it. This registration stays saved. The downloaded JSON file also remains on your computer; keep it private or remove it yourself after importing.</span></p>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>If the app is in Testing at Google, only addresses on its Test users list can sign in, and each mailbox’s access ends after 7 days, so you will need to reconnect it. This registration stays saved. The downloaded JSON file also remains on your computer; keep it private or remove it yourself after importing.</span></p>
     </div>
   </template>
 
@@ -599,12 +648,29 @@
       <h1 class="screen__title" tabindex="-1">Review and connect</h1>
       <p class="screen__lede">Pimcamp will sign in to check these settings and save them. No mail is sent during setup.</p>
       <dl class="summary" data-slot="summary"></dl>
-      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Passwords and Google permissions are stored in the installation’s protected credential storage and are never shown here.</span></p>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Passwords and Google permissions go into the encrypted password vault on the host and are never shown here.</span></p>
+      <div data-slot="vault"></div>
       <div class="actions">
         <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
         <button type="button" class="btn btn--primary" data-action="connect">Connect account</button>
       </div>
     </div>
+  </template>
+
+  <!-- Shared explanation of the encrypted password vault. Rendered on Review, on the client-file part, and inside storage failures. -->
+  <template id="tpl-vault-help">
+    <details class="disclosure disclosure--help" data-slot="vault-help">
+      <summary><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg><span>About the encrypted password vault</span></summary>
+      <div class="disclosure__body">
+        <p>Pimcamp keeps this account’s password or Google permission in an encrypted vault on <span data-slot="vault-host">the mail host</span>. The vault has a password of its own. It is separate from your email password, and your email provider never sees it.</p>
+        <ul class="disclosure__list">
+          <li><strong>Host without a vault yet:</strong> whoever sets up the host chooses a new vault password once and keeps it in a password manager. This is the only time a new vault password is created.</li>
+          <li><strong>Vault already there:</strong> it is unlocked with its existing password. A new vault is never created to replace one that already exists.</li>
+          <li><strong>Never in chat:</strong> the vault password is typed only into the host’s own unlock prompt. Nobody should ask you to send it in a chat, an email, or on this page, and this page never asks for it.</li>
+        </ul>
+        <p>This page can’t create or unlock the vault. If it is locked or missing, the agent or operator repairs it on the host with the installation’s existing storage provider. What you have entered here stays as it is while that happens.</p>
+      </div>
+    </details>
   </template>
 
   <template id="tpl-summary-row">
@@ -647,8 +713,9 @@
       <div class="done__art" aria-hidden="true" data-slot="art"><svg class="icon icon--xl"><use href="#i-check"/></svg></div>
       <h1 class="screen__title" tabindex="-1" data-slot="title">Account connected</h1>
       <p class="screen__lede" data-slot="lede"></p>
+      <dl class="summary" data-slot="summary" aria-label="Connected account"></dl>
       <ul class="caps" data-slot="caps" aria-label="What this account can do"></ul>
-      <div class="notice" data-slot="remaining" hidden></div>
+      <p class="help done__note" data-slot="note"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>You can manage this account and view its connection details from Accounts.</span></p>
       <div class="actions">
         <button type="button" class="btn btn--secondary" data-action="go-accounts">Back to accounts</button>
         <button type="button" class="btn btn--primary" data-action="add-account"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add another account</button>

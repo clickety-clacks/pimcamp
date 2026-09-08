@@ -480,6 +480,23 @@ input:disabled, select:disabled { opacity: 0.6; }
 .disclosure__body { padding: 0 var(--space-4) var(--space-2); border-top: 1px solid var(--border); }
 .disclosure__body > .field__hint { margin: var(--space-3) 0 var(--space-4); }
 
+/* Help disclosures: an icon in the summary, small muted body copy, an optional bulleted list. */
+.disclosure--help { margin: var(--space-4) 0 0; }
+.disclosure--help summary { color: var(--text); }
+.disclosure--help summary .icon { color: var(--accent-text); }
+.disclosure--help summary:hover { background: var(--surface-hover); border-radius: var(--radius-m); }
+.disclosure--help[open] summary:hover { border-radius: var(--radius-m) var(--radius-m) 0 0; }
+.disclosure--help summary:focus-visible { outline-offset: -2px; border-radius: var(--radius-m); }
+.disclosure--help .disclosure__body { display: grid; gap: var(--space-3); padding-top: var(--space-3); padding-bottom: var(--space-4); font-size: var(--text-sm); color: var(--text-muted); }
+.disclosure__list { display: grid; gap: var(--space-2); padding-left: 18px; list-style: disc; }
+.disclosure__list strong, .help-item p strong { color: var(--text); font-weight: 600; }
+.help-item { display: grid; gap: 4px; }
+.help-item + .help-item { padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.help-item__title { font-weight: 600; color: var(--text); }
+.help-item .guide__actions { margin-top: var(--space-1); }
+.notice .disclosure--help { margin-top: var(--space-2); background: var(--surface); }
+.gsetup__part > .disclosure--help, .actions ~ .disclosure--help { margin-top: 0; }
+
 /* ---------- 6. Choice cards ---------- */
 .choices { display: grid; gap: var(--space-3); margin-bottom: var(--space-5); }
 .choice {
@@ -588,10 +605,21 @@ input:disabled, select:disabled { opacity: 0.6; }
 .account__meta > span:empty { display: none; }
 .account__note { font-size: var(--text-sm); color: var(--text-muted); }
 .account__actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
+/* Per-account details: a full-width disclosure under the row, holding a compact summary list. */
+.account__details { grid-column: 1 / -1; margin: 0; }
+.account__details summary { padding: var(--space-2) var(--space-3); }
+.account__details .disclosure__body { padding: 0; border-top: 1px solid var(--border); }
+.summary--compact { border: 0; border-radius: 0; margin: 0; background: transparent; }
+.summary--compact .summary__row { grid-template-columns: 168px minmax(0, 1fr); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+.summary--compact .summary__row:first-child { border-top: 0; }
+.summary--compact dd { color: var(--text); }
+.summary--compact dd .status { vertical-align: 1px; }
+.summary--compact dd small { color: var(--text-muted); margin-top: 2px; }
 @media (max-width: 560px) {
   .account { grid-template-columns: auto minmax(0, 1fr); }
   .account__actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
+@media (max-width: 480px) { .summary--compact .summary__row { grid-template-columns: 1fr; } }
 
 /* ---------- Google states panel ---------- */
 .panel {
@@ -679,6 +707,9 @@ input:disabled, select:disabled { opacity: 0.6; }
 .guide__text code { background: var(--bg-sunken); padding: 1px 6px; border-radius: 4px; overflow-wrap: anywhere; }
 .guide__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: 2px; }
 .guide__body > .notice { margin-top: var(--space-1); }
+/* A value the user must copy exactly (the address to add as a test user). */
+.guide__value { margin: 2px 0; }
+.guide__value code { display: inline-block; font-size: var(--text-sm); padding: 4px 10px; border-radius: var(--radius-xs); background: var(--bg-sunken); color: var(--text); overflow-wrap: anywhere; }
 
 /* Notices that lead a section, and notices with a repair action */
 .notice--top { margin-top: 0; }
@@ -784,7 +815,7 @@ input[type="file"]::file-selector-button:hover { background: var(--surface-hover
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 0 0 8px color-mix(in srgb, var(--success-soft) 45%, transparent);
 }
-.done__art[data-tone="warning"] { background: var(--warning-soft); color: var(--warning); box-shadow: 0 0 0 8px color-mix(in srgb, var(--warning-soft) 45%, transparent); }
+.done__note { margin-top: var(--space-4); }
 .caps {
   display: grid; border: 1px solid var(--border);
   border-radius: var(--radius-l); overflow: hidden; background: var(--surface);
@@ -838,7 +869,8 @@ input[type="file"]::file-selector-button:hover { background: var(--surface-hover
 
 /* ---------- High contrast / forced colors ---------- */
 @media (forced-colors: active) {
-  .btn, .choice, .account-list, .stage, .summary, .checks, .caps, .panel, .field--preset, .notice, input[type="file"] { border: 1px solid CanvasText; }
+  .btn, .choice, .account-list, .stage, .summary, .checks, .caps, .panel, .field--preset, .notice, .disclosure, input[type="file"] { border: 1px solid CanvasText; }
+  .summary--compact { border: 0; }
   .status::before, .check-row__icon, .cap__icon, .step__marker, .stepper__bar, .guide__marker { forced-color-adjust: none; }
   .btn--primary { forced-color-adjust: none; background: Highlight; color: HighlightText; }
 }

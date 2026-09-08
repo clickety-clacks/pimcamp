@@ -95,9 +95,9 @@ class SecretServiceCredentials:
             result = self._run(["store", "--label", f"Pimcamp {purpose} credential", "--collection", "default",
                                 "application", "pimcamp", "entry", reference.entry], secret.encode())
             if result.returncode != 0:
-                raise CredentialError("Could not save to the desktop keyring. Unlock it or check Secret Service is running.")
+                raise CredentialError("The mail host's encrypted password vault could not save this credential. Keep this form open and ask the agent or installation owner to check the vault service and unlock the existing vault. Its password is separate from your email password; do not change or re-enter your email password to repair storage.")
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise CredentialError("The desktop keyring could not be reached. Check Secret Service and unlock the keyring.") from error
+            raise CredentialError("The mail host's encrypted password vault did not respond. Keep this form open while the agent or installation owner checks the vault service. Unlock an existing vault with its existing vault password; only choose a new password when creating a new vault. Never send either password through chat.") from error
         return reference
 
     def command(self, reference: CredentialRef) -> list[str]:

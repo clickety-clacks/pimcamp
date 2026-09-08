@@ -12,6 +12,35 @@ Pimcamp owns the integrating UI. Himalaya owns protocol operations; the installe
 
 ## Scope and screens
 
+### Post-onboarding corrections (2026-09-08)
+
+These corrections supersede the earlier references to partial notification
+status on the completion screen. Authentication plus saved configuration ends
+onboarding with **Account connected**, the address and target host. Notification
+verification is not part of the setup sequence and must not block it, show a
+yellow completion warning, or trigger a test message. Truthful notification
+information belongs in expandable account details; no test action is offered
+without a real supported implementation.
+
+Google's Test users list needs a distinct checkpoint with the entered address,
+explicit Save-and-check instructions, and an explanation that Pimcamp cannot
+verify that setting. Show contextual recovery help even while waiting for a
+Google callback: provider errors may remain in the Google window. Distinguish
+testing restrictions from organization policy; do not infer a policy violation
+from generic access denial.
+
+Explain encrypted vault storage and its separate password in the UI as well as
+the installation guide. A storage failure calls for vault repair, not another
+email password. Keep form values during recoverable errors. Renew known-expired,
+unsaved attempts when safe; never renew an ambiguous save automatically. Check a
+read-only saved receipt after a lost response. A service restart or lost browser
+authorization can require a new handoff and inspection of saved accounts.
+
+The agent reuses the one setup server, tunnel and browser origin. It must not
+change ports or restart a working form underneath the user. UI changes in this
+correction are designed directly with Fable 5.1; the agent owns integration,
+verification and the authorized deployment.
+
 ### Password-storage prerequisite copy (2026-09-08 clarification)
 
 Before requesting email credentials, explain any missing encrypted-storage

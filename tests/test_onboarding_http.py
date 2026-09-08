@@ -13,9 +13,29 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pimcamp.onboarding_http import SetupHandler
+from pimcamp.onboarding_service import SetupError
+from pimcamp.onboarding_credentials import CredentialError
 
 
 class SetupHTTPTests(unittest.TestCase):
+    def test_save_status_is_authenticated_and_does_not_commit(self):
+        payload = {'action':'saveStatus', 'setupId':'fixture', 'draft':{'method':'imap'}}
+        response, _ = self.request(payload=payload, headers={'X-Pimcamp-CSRF':'wrong'})
+        self.assertEqual(response[0], 403)
+        self.service.save_status.assert_not_called()
+        self.service.save_status.return_value = {'ok':True, 'accountId':'saved'}
+        response, _ = self.request(payload=payload)
+        self.assertEqual(response, (200, {'ok':True, 'accountId':'saved'}))
+        self.service.commit.assert_not_called()
+
+    def test_recovery_errors_have_codes_without_secret_details(self):
+        for error, code in ((SetupError('Expired', code='setup_expired'), 'setup_expired'),
+                            (CredentialError('Check the vault'), 'credential_storage')):
+            self.service.check.side_effect = error
+            response, _ = self.request(payload={'action':'checkIncoming', 'setupId':'fixture', 'draft':{}})
+            self.assertEqual(response[0], 400)
+            self.assertEqual(response[1]['error']['code'], code)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

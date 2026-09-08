@@ -3,6 +3,7 @@
   'use strict';
   let csrf;
   let setupId;
+  let reconnectId;
   let oauthPending = Promise.resolve();
   async function call(action, payload = {}, signal) {
     if (!csrf) {
@@ -16,28 +17,62 @@
       body: JSON.stringify({action, ...payload}),
     });
     const result = await response.json();
-    if (!response.ok) throw publicError(result.error?.message || 'Setup could not complete this step.');
+    if (!response.ok) throw publicError(result.error?.message || 'Setup could not complete this step.', result.error?.code);
     return result;
   }
-  function publicError(message) {
+  function publicError(message, code) {
     const error = new Error(message);
     error.publicMessage = message;
+    error.code = code;
     return error;
+  }
+  async function beginSession(accountId) {
+    if (setupId) await call('cancelSetup', {setupId});
+    const setup = await call('beginSetup', accountId ? {accountId} : {});
+    setupId = setup.setupId;
+    reconnectId = accountId;
+    return setup;
+  }
+  async function accountStep(action, draft, signal) {
+    try { return await call(action, {setupId, draft}, signal); }
+    catch (error) {
+      // Only an explicit expired receipt proves this request did not write.
+      // Network errors and unknown outcomes must never trigger fresh saves.
+      if (error.code !== 'setup_expired' || signal?.aborted) throw error;
+      await beginSession(reconnectId);
+      if (draft.method === 'google') throw publicError(
+        'Your Google sign-in expired. Your account details are kept. Choose Sign in with Google again to renew permission.', 'google_signin_required');
+      if (action !== 'checkIncoming') {
+        const incoming = await call('checkIncoming', {setupId, draft}, signal);
+        if (!incoming.ok) return incoming;
+      }
+      if (action === 'commitAccount') {
+        const outgoing = await call('checkOutgoing', {setupId, draft}, signal);
+        if (!outgoing.ok) return outgoing;
+      }
+      return call(action, {setupId, draft}, signal);
+    }
   }
   window.PimcampSetupService = {
     isDemo: false,
     listAccounts: () => call('listAccounts'),
     googleApplicationStatus: () => call('googleApplicationStatus'),
     configureGoogleApplication: ({credentialsJson}) => call('configureGoogleApplication', {credentialsJson}),
-    async beginSetup(accountId) {
-      if (setupId) await call('cancelSetup', {setupId});
-      const setup = await call('beginSetup', accountId ? {accountId} : {});
-      setupId = setup.setupId;
-      return setup;
+    beginSetup: beginSession,
+    checkIncoming: (draft, signal) => accountStep('checkIncoming', draft, signal),
+    checkOutgoing: (draft, signal) => accountStep('checkOutgoing', draft, signal),
+    async commitAccount(draft, signal) {
+      try { return await accountStep('commitAccount', draft, signal); }
+      catch (error) {
+        // Reconcile a lost confirmation using a read-only receipt query. Never
+        // turn an ambiguous network failure into another publication request.
+        try {
+          const receipt = await call('saveStatus', {setupId, draft}, signal);
+          if (receipt.ok) return receipt;
+        } catch (_) { /* retain the original actionable failure */ }
+        throw error;
+      }
     },
-    checkIncoming: (draft, signal) => call('checkIncoming', {setupId, draft}, signal),
-    checkOutgoing: (draft, signal) => call('checkOutgoing', {setupId, draft}, signal),
-    commitAccount: (draft, signal) => call('commitAccount', {setupId, draft}, signal),
     observationReadiness: (accountId, signal) => call('observationReadiness', {accountId}, signal),
     checkAccount: accountId => call('checkAccount', {accountId}),
     async beginOAuth(_draft, signal) {
@@ -45,7 +80,7 @@
       const popup = window.open('about:blank', '_blank', 'popup,width=540,height=720');
       if (!popup) throw publicError('Allow the Google sign-in window in your browser, then try again.');
       popup.opener = null;
-      const currentSetup = setupId;
+      let currentSetup = setupId;
       const previous = oauthPending;
       let release;
       oauthPending = new Promise(resolve => { release = resolve; });
@@ -57,7 +92,14 @@
         if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
         // Do not abandon the start request: fetch cancellation cannot roll back
         // server-side credential creation. Wait for its receipt, then cancel.
-        const result = await call('beginOAuth', {setupId: currentSetup});
+        let result;
+        try { result = await call('beginOAuth', {setupId: currentSetup}); }
+        catch (error) {
+          if (error.code !== 'setup_expired' || signal?.aborted) throw error;
+          await beginSession(reconnectId);
+          currentSetup = setupId;
+          result = await call('beginOAuth', {setupId: currentSetup});
+        }
         started = true;
         if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
         const destination = new URL(result.authorizationUrl);
