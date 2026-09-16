@@ -6,6 +6,8 @@ import subprocess
 import tomllib
 
 from .onboarding import ImapSetup
+from .errors import PimcampError
+from .jsonio import loads_one
 from . import CAPABILITIES
 
 
@@ -138,9 +140,9 @@ def check_himalaya_account(executable: str, config: Path, account: str,
     direction = "incoming" if backend == "imap" else "outgoing"
     try:
         result = subprocess.run(
-            [executable, "--log-level", "off", "--config", str(config),
+            [executable, "--json", "--log-level", "off", "--config", str(config),
              "--account", account, "--backend", backend, "account", "check"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=timeout, check=False,
             env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
         )
@@ -150,7 +152,23 @@ def check_himalaya_account(executable: str, config: Path, account: str,
     except OSError:
         return {"ok": False, "code": "unavailable",
                 "message": "The mail connection tool could not start. Check the installation."}
-    if result.returncode != 0:
+    # Himalaya 2.1.0 returns 0 even when authentication fails. Validate its
+    # CheckReport (bbdfb09b src/account/check.rs), never just process success.
+    # Keep provider errors private, including malformed or ambiguous reports.
+    passed = False
+    if result.returncode == 0:
+        try:
+            report = loads_one(result.stdout)
+        except PimcampError:
+            report = None
+        if isinstance(report, dict) and report.get("account") == account:
+            checks = report.get("backends")
+            if isinstance(checks, list) and len(checks) == 1:
+                check = checks[0]
+                passed = (isinstance(check, dict) and check.get("backend") == backend
+                          and check.get("ok") is True and "error" in check
+                          and check["error"] is None)
+    if not passed:
         return {"ok": False, "code": "connection_failed",
                 "message": f"Could not connect or sign in to {direction} mail. Check the server, security, username and password."}
     return {"ok": True, "message": f"Signed in to {direction} mail. No mail was sent."}

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import subprocess
 import tempfile
 import sys
@@ -70,14 +71,80 @@ class LowerSetupTests(unittest.TestCase):
 
     def test_check_uses_lower_authentication_command_without_mail_operations(self):
         with patch("pimcamp.onboarding_lower.subprocess.run",
-                   return_value=subprocess.CompletedProcess([], 0)) as run:
+                   return_value=subprocess.CompletedProcess([], 0, json.dumps({
+                       "account": "account-a", "backends": [
+                           {"backend": "smtp", "ok": True, "error": None}]}).encode())) as run:
             result = check_himalaya_account("/opt/himalaya", Path("/private/account.toml"), "account-a", "smtp")
         self.assertTrue(result["ok"])
         args, kwargs = run.call_args
         self.assertEqual(args[0][-2:], ["account", "check"])
         self.assertEqual(args[0][args[0].index("--backend") + 1], "smtp")
-        for stream in ("stdin", "stdout", "stderr"):
+        self.assertIn("--json", args[0])
+        self.assertEqual(kwargs["stdout"], subprocess.PIPE)
+        for stream in ("stdin", "stderr"):
             self.assertEqual(kwargs[stream], subprocess.DEVNULL)
+
+    def test_exit_zero_with_fail_output_does_not_pass_authentication(self):
+        # Synthetic executable, not a captured lower-adapter fixture. JSON shape
+        # follows Himalaya bbdfb09b src/account/check.rs; text reproduces issue #1.
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "himalaya-stub"
+            for backend in ("imap", "smtp"):
+                reports = [
+                    f"Account: account-a\n  {backend}: FAIL (private diagnostic)\n".encode(),
+                    json.dumps({"account": "account-a", "backends": [
+                        {"backend": backend, "ok": False, "error": "private diagnostic"}]}).encode(),
+                ]
+                for report in reports:
+                    with self.subTest(backend=backend, report=report):
+                        executable.write_text(f"#!{sys.executable}\nimport sys\nsys.stdout.buffer.write({report!r})\n")
+                        executable.chmod(0o700)
+                        result = check_himalaya_account(str(executable), Path(temporary) / "account.toml",
+                                                        "account-a", backend)
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["code"], "connection_failed")
+                        self.assertNotIn("private diagnostic", str(result))
+
+    def test_success_requires_an_unambiguous_report_for_the_requested_account_and_backend(self):
+        for backend in ("imap", "smtp"):
+            success = {"backend": backend, "ok": True, "error": None}
+            reports = [
+                ({"account": "account-a", "backends": [success]}, True),
+                ({"account": "other-account", "backends": [success]}, False),
+                ({"account": "account-a", "backends": []}, False),
+                ({"account": "account-a", "backends": [success, success]}, False),
+                ({"account": "account-a", "backends": [{**success, "backend": "other"}]}, False),
+                ({"account": "account-a", "backends": [{**success, "ok": "true"}]}, False),
+                ({"account": "account-a", "backends": [{**success, "ok": 1}]}, False),
+                ({"account": "account-a", "backends": [{**success, "error": "private diagnostic"}]}, False),
+                ({"account": "account-a", "backends": [{"backend": backend, "ok": True}]}, False),
+                ({"account": "account-a", "backends": [None]}, False),
+                ({"account": "account-a", "backends": {}}, False),
+                ({}, False), ([], False), (None, False),
+            ]
+            for report, expected in reports:
+                with self.subTest(backend=backend, report=report):
+                    with patch("pimcamp.onboarding_lower.subprocess.run", return_value=
+                               subprocess.CompletedProcess([], 0, json.dumps(report).encode())):
+                        result = check_himalaya_account("/opt/himalaya", Path("/private/account.toml"),
+                                                        "account-a", backend)
+                    self.assertEqual(result["ok"], expected)
+                    self.assertNotIn("private diagnostic", str(result))
+
+    def test_invalid_output_and_nonzero_exit_cannot_pass(self):
+        valid = b'{"account":"account-a","backends":[{"backend":"imap","ok":true,"error":null}]}'
+        outcomes = [(b"", 0), (b"private diagnostic", 0), (b"\xff", 0),
+                    (valid + valid, 0), (valid.replace(b'"ok":true', b'"ok":false,"ok":true'), 0),
+                    (valid, 1)]
+        for output, returncode in outcomes:
+            with self.subTest(output=output, returncode=returncode):
+                with patch("pimcamp.onboarding_lower.subprocess.run", return_value=
+                           subprocess.CompletedProcess([], returncode, output)):
+                    result = check_himalaya_account("/opt/himalaya", Path("/private/account.toml"),
+                                                    "account-a", "imap")
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["code"], "connection_failed")
+                self.assertNotIn("private diagnostic", str(result))
 
     def test_failures_are_actionable_without_raw_tool_output(self):
         for outcome, code in ((subprocess.TimeoutExpired("fixture", 30), "timeout"),
