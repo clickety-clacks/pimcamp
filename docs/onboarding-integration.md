@@ -57,6 +57,31 @@ Pimcamp's actual configuration parser. Himalaya's installed `account check`
 command is the intended per-backend authentication operation; setup does not
 use a send or mailbox-read command to test a login.
 
+### Authentication report handling
+
+Himalaya 2.1.0 can exit 0 after a failed `account check`. Its text report then
+contains a backend `FAIL` line. Setup requests `--json` and requires the report
+to name the requested account and exactly one requested backend, with boolean
+`ok: true` and `error: null`. Nonzero exit status, failure reports, malformed
+output, duplicate JSON members, and missing success evidence all fail the check.
+Provider diagnostics stay out of setup responses and logs.
+
+The report shape is defined by `CheckReport` and `BackendCheck` in
+[Himalaya's pinned account-check source](https://github.com/pimalaya/himalaya/blob/bbdfb09b8b8841a509df463a80066531fb81af04/src/account/check.rs).
+The installed Himalaya 2.1.0 binary was also checked against a temporary,
+non-listening loopback endpoint. Both IMAP and SMTP returned exit 0 with a
+failed text report and a JSON report containing `ok: false`. That probe used
+no mailbox credentials and establishes failure-output compatibility only.
+The regression suite uses explicitly synthetic subprocess output and covers
+initial setup, saved-account checks, and reconnect without replacing the old
+account revision or credentials after a failed check.
+
+For Namecheap Private Email, the username must be the full mailbox address,
+as documented in [Namecheap's mail-client settings](https://www.namecheap.com/support/knowledgebase/article.aspx/1179/2175/general-private-email-configuration-for-mail-clients-and-mobile-devices/).
+The existing preset fills the full address and explains this requirement.
+Other providers can require different usernames, so the field stays editable;
+an incorrect login must fail the authentication check.
+
 ## Current launch and remaining integration
 
 `scripts/pimcamp-setup` launches the local UI on port 33281 by default and never

@@ -2,6 +2,7 @@ from pathlib import Path
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pimcamp.onboarding_credentials import CredentialRef
+from pimcamp.onboarding_lower import check_himalaya_account
 from pimcamp.onboarding_service import SetupError, SetupService
 from pimcamp.onboarding_store import AccountStore
 
@@ -61,6 +63,84 @@ class SetupServiceTests(unittest.TestCase):
         setup_id, draft = setup_id or self.setup_id, draft or self.draft
         for backend in ("imap", "smtp"):
             self.service.check(setup_id, draft, backend)
+
+    def use_lower_checker(self):
+        """Exercise the production checker with synthetic subprocess reports."""
+        self.service.checker = check_himalaya_account
+
+        def run(command, **kwargs):
+            self.assertEqual(command[-2:], ["account", "check"])
+            backend = command[command.index("--backend") + 1]
+            account = command[command.index("--account") + 1]
+            report = {"account": account, "backends": [{"backend": backend,
+                      "ok": self.outcomes[backend],
+                      "error": None if self.outcomes[backend] else "private authentication diagnostic"}]}
+            return subprocess.CompletedProcess(command, 0, json.dumps(report).encode())
+
+        mocked = patch("pimcamp.onboarding_lower.subprocess.run", side_effect=run)
+        mocked.start()
+        self.addCleanup(mocked.stop)
+
+    def assert_failed_lower_checks_block_commit(self, draft):
+        self.use_lower_checker()
+        for failed in ("imap", "smtp"):
+            with self.subTest(failed_backend=failed):
+                self.outcomes = {backend: backend != failed for backend in ("imap", "smtp")}
+                for backend in ("imap", "smtp"):
+                    result = self.service.check(self.setup_id, draft, backend)
+                    self.assertEqual(result["ok"], backend != failed)
+                    self.assertNotIn("private authentication diagnostic", str(result))
+                with self.assertRaisesRegex(SetupError, "Both incoming and outgoing"):
+                    self.service.commit(self.setup_id, draft)
+                self.assertEqual(self.service.list_accounts(), [])
+                self.assertFalse(self.service.attempts[self.setup_id].saved)
+
+    def test_exit_zero_authentication_failure_blocks_initial_password_setup(self):
+        self.assert_failed_lower_checks_block_commit(self.draft)
+
+    def test_exit_zero_authentication_failure_blocks_initial_google_setup(self):
+        self.assert_failed_lower_checks_block_commit(self.google_authorized())
+
+    def assert_saved_account_check_detects_failed_authentication(self, draft):
+        self.use_lower_checker()
+        self.checked(draft=draft)
+        identifier = self.service.commit(self.setup_id, draft)["accountId"]
+        for failed in ("imap", "smtp"):
+            with self.subTest(failed_backend=failed):
+                self.outcomes = {backend: backend != failed for backend in ("imap", "smtp")}
+                result = self.service.check_existing(identifier)
+                self.assertEqual(result["status"], "needs-reconnect")
+                self.assertNotIn("checks passed", result["note"])
+                self.assertNotIn("private authentication diagnostic", str(result))
+        self.outcomes = {"imap": True, "smtp": True}
+        self.assertEqual(self.service.check_existing(identifier)["status"], "connected")
+
+    def test_saved_password_account_detects_exit_zero_authentication_failure(self):
+        self.assert_saved_account_check_detects_failed_authentication(self.draft)
+
+    def test_saved_google_account_detects_exit_zero_authentication_failure(self):
+        self.assert_saved_account_check_detects_failed_authentication(self.google_authorized())
+
+    def test_exit_zero_authentication_failure_cannot_replace_saved_credentials(self):
+        self.use_lower_checker()
+        self.checked()
+        identifier = self.service.commit(self.setup_id, self.draft)["accountId"]
+        original = self.service.store._revision(identifier)
+        original_files = {path.name: path.read_bytes() for path in original.iterdir()}
+        original_credentials = dict(self.credentials.keys)
+        reconnect = self.service.begin(identifier)["setupId"]
+        changed = copy.deepcopy(self.draft)
+        changed["incoming"]["password"] = "wrong-fixture-password"
+        for failed in ("imap", "smtp"):
+            with self.subTest(failed_backend=failed):
+                self.outcomes = {backend: backend != failed for backend in ("imap", "smtp")}
+                self.checked(reconnect, changed)
+                with self.assertRaisesRegex(SetupError, "Both incoming and outgoing"):
+                    self.service.commit(reconnect, changed)
+                self.assertEqual(self.service.store._revision(identifier), original)
+                self.assertEqual({path.name: path.read_bytes() for path in original.iterdir()}, original_files)
+        self.service.cancel(reconnect)
+        self.assertEqual(self.credentials.keys, original_credentials)
 
     def test_active_attempt_refreshes_idle_deadline(self):
         attempt = self.service.attempts[self.setup_id]
