@@ -1,4 +1,4 @@
-# Racter runtime acceptance — 2026-09-05
+# Runtime acceptance in a test environment — 2026-09-05
 
 The seven-operation runtime at commit
 `2c45f8b336a86f71d2c5b795eadf7173a648cc57` completed this additional real-mail
