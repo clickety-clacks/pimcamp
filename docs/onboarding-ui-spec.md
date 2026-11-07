@@ -5,7 +5,7 @@ Design implementer requested by Mike: Claude 5.1; do not substitute silently.
 
 ## Product objective
 
-Anyone installing Pimcamp on Linux can connect their own email account through an attractive, understandable browser interface. One account setup configures the existing operations, credential, and observation components consistently. No personal email address, home directory, workstation, provider, or Tailscale hostname is a product default. Racter is our test environment; Gibson is a later production target.
+Anyone installing Pimcamp on Linux can connect their own email account through an attractive, understandable browser interface. One account setup configures the existing operations, credential, and observation components consistently. No personal email address, home directory, workstation, provider, or Tailscale hostname is a product default. The test environment supports validation; production is a later deployment target.
 
 Pimcamp owns the integrating UI. Himalaya owns protocol operations; the installed observation adapter owns mail watching; the OAuth helper owns token acquisition/refresh. Inspect their current supported configuration interfaces before integration. Reuse existing capabilities instead of implementing another mail or OAuth client.
 
@@ -44,6 +44,6 @@ Serve one stable local setup origin. Default local-only access; remote test acce
 - Generic IMAP setup works against configurable test endpoints; alternate address and custom host values persist correctly. Namecheap works as a preset, not hardcoded behavior.
 - Google flow uses a user-selected account and accurately handles installation prerequisites and consent. Human consent is the only required user handoff once prerequisites are ready.
 - Integration checks cover duplicate submission, invalid fields, rejected credentials, OAuth cancellation, partial connection failure, safe retry, saved configuration, and preservation of an existing account. No live test mail without an explicit send action.
-- Real supported onboarding verified on Racter; no Gibson production rollout is implied.
+- Real supported onboarding is verified in the test environment; no production rollout is implied.
 
 Sequence: inspect existing code and lower interfaces; Claude 5.1 creates the designed preview; review visuals and interaction against this spec; integrate the same UI; test and document. Keep one responsible implementer and proportional review. Do not re-open design on every small correction.
