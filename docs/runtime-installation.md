@@ -51,5 +51,5 @@ python3 -m unittest discover -s tests -v
 ```
 
 Missing-account skips are expected on a software-only installation and do not
-prove live integration. The Racter evidence is documented in
-[racter-runtime-acceptance.md](racter-runtime-acceptance.md).
+prove live integration. The test-environment evidence is documented in
+[runtime-acceptance.md](runtime-acceptance.md).
