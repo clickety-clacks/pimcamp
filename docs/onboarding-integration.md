@@ -7,7 +7,7 @@ directly for the HTML/CSS/JavaScript design; this is not a Tightbeam assignment.
 ## Baseline inspected on 2026-09-04
 
 The repository's executable implements the seven mail operations over JSON
-stdio. It has no account setup HTTP boundary. The Racter test installation has
+stdio. It has no account setup HTTP boundary. The test installation has
 a separate Python onboarding server outside this repository. That server is
 installation-specific, not a distributable generic onboarding implementation:
 
@@ -30,7 +30,7 @@ keyring helpers in `scripts/pimcamp-keyctl-read` and `scripts/pimcamp-keyctl-wri
 They accept `account:<64 lowercase hex characters>:imap|smtp|oauth|client`.
 The opaque identifier must identify an account credential revision, not a
 human label or email address. New setup uses `--create-only`; token refresh can
-update only its own exact OAuth entry. The old Racter helpers and fixed entry
+update only its own exact OAuth entry. The old test-installation helpers and fixed entry
 names remain untouched. No live key operations were performed in the helper
 tests.
 
@@ -45,11 +45,11 @@ no silent fallback to volatile storage or plaintext configuration.
 
 Account publication now has a local tested store: a stable account link points
 to a complete immutable configuration revision. Reconnect compares the original
-revision before replacing that link. Existing revisions remain available to
-in-flight readers; revision/credential retention still needs an explicit policy.
+revision before replacing that link. Existing revisions remain available to in-
+flight readers; revision/credential retention still needs an explicit policy.
 This store is connected to the local setup service and authenticated HTTP
-handlers. Isolated acceptance on Racter is recorded below; its existing mailbox
-deployment has not been replaced.
+handlers. Isolated acceptance in the test environment is recorded below; its
+existing mailbox deployment has not been replaced.
 
 Configuration generation produces separate strict Himalaya and Carillon files,
 plus a Pimcamp profile pointing to both. Generated profiles are tested through
@@ -66,21 +66,24 @@ to name the requested account and exactly one requested backend, with boolean
 output, duplicate JSON members, and missing success evidence all fail the check.
 Provider diagnostics stay out of setup responses and logs.
 
-The report shape is defined by `CheckReport` and `BackendCheck` in
-[Himalaya's pinned account-check source](https://github.com/pimalaya/himalaya/blob/bbdfb09b8b8841a509df463a80066531fb81af04/src/account/check.rs).
-The installed Himalaya 2.1.0 binary was also checked against a temporary,
-non-listening loopback endpoint. Both IMAP and SMTP returned exit 0 with a
-failed text report and a JSON report containing `ok: false`. That probe used
-no mailbox credentials and establishes failure-output compatibility only.
-The regression suite uses explicitly synthetic subprocess output and covers
-initial setup, saved-account checks, and reconnect without replacing the old
-account revision or credentials after a failed check.
+The report shape is defined by `CheckReport` and `BackendCheck` in [Himalaya's
+pinned account-check source](https://github.com/pimalaya/himalaya/blob/bbdfb09b8
+b8841a509df463a80066531fb81af04/src/account/check.rs). The installed Himalaya
+2.1.0 binary was also checked against a temporary, non-listening loopback
+endpoint. Both IMAP and SMTP returned exit 0 with a failed text report and a
+JSON report containing `ok: false`. That probe used no mailbox credentials and
+establishes failure-output compatibility only. The regression suite uses
+explicitly synthetic subprocess output and covers initial setup, saved-account
+checks, and reconnect without replacing the old account revision or credentials
+after a failed check.
 
-For Namecheap Private Email, the username must be the full mailbox address,
-as documented in [Namecheap's mail-client settings](https://www.namecheap.com/support/knowledgebase/article.aspx/1179/2175/general-private-email-configuration-for-mail-clients-and-mobile-devices/).
-The existing preset fills the full address and explains this requirement.
-Other providers can require different usernames, so the field stays editable;
-an incorrect login must fail the authentication check.
+For Namecheap Private Email, the username must be the full mailbox address, as
+documented in [Namecheap's mail-client settings](https://www.namecheap.com/suppo
+rt/knowledgebase/article.aspx/1179/2175/general-private-email-configuration-for-
+mail-clients-and-mobile-devices/). The existing preset fills the full address
+and explains this requirement. Other providers can require different usernames,
+so the field stays editable; an incorrect login must fail the authentication
+check.
 
 ## Current launch and remaining integration
 
@@ -120,25 +123,27 @@ all UI assets. It preserves old releases and account data, refuses unrelated
 executable replacement, and does not install the lower mail tools. Isolated
 installation tests include launching the installed setup command's help output.
 
-On 2026-09-08 the candidate passed 120 ordinary tests on Racter, with two live
-tests skipped. Claude completed the direct HTML/CSS design commission. Eezo's
-existing Chromium build then passed 150 gallery/layout checks (1280, 375 and
-320px, light/dark) and eight interaction checks; desktop and mobile screenshots
-were inspected. These checks exercise fixture flows, not real account consent.
-Racter's cached Chromium could not start with its host sandbox policy; no
-sandbox policy was changed.
+On 2026-09-08 the candidate passed 120 ordinary tests in the test environment,
+with two live tests skipped. Claude completed the direct HTML/CSS design
+commission. The browser-test environment's existing Chromium build then passed
+150 gallery/layout checks (1280, 375 and 320px, light/dark) and eight
+interaction checks; desktop and mobile screenshots were inspected. These checks
+exercise fixture flows, not real account consent. The test environment's cached
+Chromium could not start with its host sandbox policy; no sandbox policy was
+changed.
 
-Real IMAP onboarding acceptance subsequently passed on Racter using the existing
-authorized test account through protected credential commands. It authenticated
-IMAP and SMTP with the installed lower tools, saved an isolated account profile,
-selected that profile as the isolated runtime default, and completed a public
-Pimcamp `list` request. The source configuration remained byte-for-byte unchanged;
-all acceptance-owned credential entries were removed afterward. No mail was sent
-or filed. This verifies the explicit volatile Linux-keyring lane, not persistent
-Secret Service storage. The opt-in test is `tests.test_live_onboarding`; ordinary
-test runs skip it unless the documented environment variables in that file are set.
+Real IMAP onboarding acceptance subsequently passed in the test environment
+using the existing authorized test account through protected credential
+commands. It authenticated IMAP and SMTP with the installed lower tools, saved
+an isolated account profile, selected that profile as the isolated runtime
+default, and completed a public Pimcamp `list` request. The source configuration
+remained byte-for-byte unchanged; all acceptance-owned credential entries were
+removed afterward. No mail was sent or filed. This verifies the explicit
+volatile Linux-keyring lane, not persistent Secret Service storage. The opt-in
+test is `tests.test_live_onboarding`; ordinary test runs skip it unless the
+documented environment variables in that file are set.
 
-Persistent Secret Service acceptance also passed on Racter using
+Persistent Secret Service acceptance also passed in the test environment using
 `python3 tests/support/secret_service_probe.py`. This launches a private D-Bus
 session and GNOME Keyring with temporary XDG directories and generated test
 values. It verifies create/read, account-owned OAuth refresh writes, persistence
@@ -148,13 +153,14 @@ keyring. Temporary data and the private daemon are removed on exit. This is not
 proof of unattended unlock after a host reboot; that depends on the installation's
 login/keyring configuration and must be documented for a headless deployment.
 
-The latest ordinary Racter gate ran 123 tests successfully with three opt-in
-live tests skipped, plus three Node transport checks. The IMAP onboarding live
-test and isolated Secret Service probe were enabled and passed separately.
-The final pre-commit Eezo browser run passed 150 layout checks and 13 interaction checks, including real
-Tab, text-entry and Enter events through account details and IMAP/SMTP settings
-to a secret-free review screen, Back preserving account details, recoverable
-connection-check errors, truthful save uncertainty, and unverified watcher copy.
+The latest ordinary test-environment gate ran 123 tests successfully with three
+opt-in live tests skipped, plus three Node transport checks. The IMAP onboarding
+live test and isolated Secret Service probe were enabled and passed separately.
+The final pre-commit browser run passed 150 layout checks and 13 interaction
+checks, including real Tab, text-entry and Enter events through account details
+and IMAP/SMTP settings to a secret-free review screen, Back preserving account
+details, recoverable connection-check errors, truthful save uncertainty, and
+unverified watcher copy.
 
 `node tests/onboarding_transport.mjs` verifies Google transport lifecycle without
 network access: a provider-detached window does not imply cancellation, a retry
@@ -162,13 +168,14 @@ waits for the previous start request and cleanup, and failure clears the pending
 grant. These are deterministic transport checks, not proof of real Google consent.
 
 The redesigned frontend also passed all seven browser-to-server fixture checks
-on Eezo: authenticated launch, real HTTP transport, custom account publication,
-secret-free review/listing, HttpOnly session cookie, and truthful observation
-status. This run exposed and fixed revision containment checks when a store's
-parent directory is a legitimate symlink. A new regression test passed on Racter.
-The fixture server was stopped after verification; it used no real mail or keys.
+in the browser-test environment: authenticated launch, real HTTP transport,
+custom account publication, secret-free review/listing, HttpOnly session cookie,
+and truthful observation status. This run exposed and fixed revision containment
+checks when a store's parent directory is a legitimate symlink. A new regression
+test passed in the test environment. The fixture server was stopped after
+verification; it used no real mail or keys.
 
-### Gibson candidate deployment (2026-09-08)
+### Production-target candidate deployment (2026-09-08)
 
 Candidate commit `e00d9dcd1693ed2402af2e9bf60c13c4e3037251` was installed
 using its included installer on the authorized production target. Both the mail
@@ -194,7 +201,7 @@ process arguments or a shell history file. Callback policy tests cover wrong
 state/address, cancellation, organization denial and expiry.
 
 An offline construction probe passed using a copy of the actual installed
-Racter Ortie binary, a fake client ID, and disabled credential commands. It
+test-environment Ortie binary, a fake client ID, and disabled credential commands. It
 validated the real binary's authorization-request output without contacting
 Google, obtaining consent, reading a token or writing credentials. This is not
 evidence of a completed Google login. Browser callback routing, provider-verified
@@ -257,6 +264,6 @@ a hard-coded test-host address or an unprotected LAN listener.
    failure rollback, retry, request authorization and secret redaction.
 4. Existing repository tests still pass; live tests are reported independently
    from fixture tests and skips.
-5. Racter remains the test target. Verify a real supported onboarding path
-   there before proposing a production deployment on Gibson. Do not send mail
+5. Use the test environment to verify a real supported onboarding path
+   before proposing a production deployment. Do not send mail
    as an implicit side effect of connection checks.

@@ -156,9 +156,10 @@ own environment/topology documentation; they are not part of the reusable skill.
 
 See [runtime installation](docs/runtime-installation.md) for release layout,
 dependency and credential requirements, and
-[Racter acceptance](docs/racter-runtime-acceptance.md) for the verified real-mail
-self-send, notification, and retrieval sequence. The published v0.1.0 runtime
-release predates the included onboarding candidate described above.
+[Runtime acceptance](docs/runtime-acceptance.md) for the verified real-mail
+self-send, notification, and retrieval sequence from a test environment. The
+published v0.1.0 runtime release predates the included onboarding candidate
+described above.
 
 Pimcamp requires Linux, Python 3.12 or later, and an owner-only deployment
 configuration. The repository-local executable is `./pimcamp`.
