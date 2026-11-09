@@ -1,0 +1,200 @@
+#!/usr/bin/python3 -I
+"""Store one approved Pimcamp credential entry in a Linux keyring."""
+
+import fcntl
+import json
+import os
+import resource
+import subprocess
+import sys
+
+
+KEYCTL = "/usr/bin/keyctl"
+MAX_SECRET_BYTES = 1024 * 1024
+KEY_PERMISSIONS = "0x3f3f0000"
+def entry_description(entry):
+    """Opaque account/revision IDs scope each secret; labels never become keys."""
+    import re
+    if not isinstance(entry, str) or not re.fullmatch(
+        r"account:[a-f0-9]{64}:(imap|smtp|oauth|client)", entry
+    ):
+        raise ValueError("unsupported entry name")
+    return "pimcamp-" + entry
+
+
+class HelperError(Exception):
+    pass
+
+
+def fail(message):
+    os.write(2, ("pimcamp-keyctl-write: " + message + "\n").encode("ascii"))
+    raise SystemExit(1)
+
+
+def secure_process():
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    os.environ.clear()
+    os.environ.update({"LC_ALL": "C", "PATH": "/usr/bin:/bin"})
+
+
+def parse_args(argv):
+    if argv == ["--help"]:
+        os.write(
+            1,
+            b"usage: pimcamp-keyctl-write [--keyring @u|SERIAL] [--create-only] "
+            b"account:SHA256:imap|smtp|oauth|client\n",
+        )
+        raise SystemExit(0)
+    keyring = "@u"
+    create_only = False
+    remaining = list(argv)
+    if len(remaining) >= 2 and remaining[0] == "--keyring":
+        keyring = remaining[1]
+        remaining = remaining[2:]
+    if remaining[:1] == ["--create-only"]:
+        create_only = True
+        remaining = remaining[1:]
+    if len(remaining) != 1:
+        fail("invalid arguments")
+    entry = remaining[0]
+    try:
+        entry_description(entry)
+    except ValueError:
+        fail("unsupported entry name")
+    if keyring != "@u" and (not keyring.isascii() or not keyring.isdecimal()):
+        fail("invalid keyring identifier")
+    if keyring != "@u" and int(keyring) <= 0:
+        fail("invalid keyring identifier")
+    return keyring, entry, create_only
+
+
+def normalize_secret(payload):
+    if payload.endswith(b"\n"):
+        return payload[:-1]
+    return payload
+
+
+def read_secret():
+    if os.isatty(0):
+        fail("refusing secret input from a terminal")
+    payload = sys.stdin.buffer.read(MAX_SECRET_BYTES + 1)
+    if len(payload) > MAX_SECRET_BYTES:
+        fail("stdin exceeds the size limit")
+    payload = normalize_secret(payload)
+    if not payload:
+        fail("empty secret is not allowed")
+    return payload
+
+
+def run_keyctl(arguments, payload=None):
+    try:
+        result = subprocess.run(
+            [KEYCTL, *arguments],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise HelperError from error
+    if result.returncode != 0:
+        raise HelperError
+    return result.stdout
+
+
+def parse_serial(raw):
+    value = raw.strip()
+    if not value.isascii() or not value.isdigit() or int(value) <= 0:
+        raise HelperError
+    return value.decode("ascii")
+
+
+def matching_serials(keyring, description):
+    raw_ids = run_keyctl(["rlist", keyring])
+    matches = []
+    for raw_id in raw_ids.split():
+        serial = parse_serial(raw_id)
+        raw_description = run_keyctl(["rdescribe", serial])
+        try:
+            fields = raw_description.rstrip(b"\n").decode("utf-8").split(";", 4)
+        except UnicodeDecodeError as error:
+            raise HelperError from error
+        if len(fields) != 5:
+            raise HelperError
+        if fields[0] == "user" and fields[4] == description:
+            matches.append(serial)
+    return matches
+
+
+def cleanup_created(serial, keyring):
+    ok = True
+    for arguments in (["revoke", serial], ["unlink", serial, keyring]):
+        try:
+            run_keyctl(arguments)
+        except HelperError:
+            ok = False
+    return ok
+
+
+def acquire_lock():
+    helper_directory = os.path.dirname(os.path.realpath(__file__))
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        descriptor = os.open(helper_directory, flags)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError as error:
+        fail("cannot acquire the helper lock")
+    return descriptor
+
+
+def store(keyring, entry, payload, create_only=False):
+    description = entry_description(entry)
+    matches = matching_serials(keyring, description)
+    if len(matches) > 1:
+        raise HelperError
+    if matches:
+        if create_only:
+            raise HelperError
+        serial = matches[0]
+        run_keyctl(["setperm", serial, KEY_PERMISSIONS])
+        run_keyctl(["pupdate", serial], payload)
+        action = "updated"
+    else:
+        serial = None
+        try:
+            serial = parse_serial(
+                run_keyctl(["padd", "user", description, keyring], payload)
+            )
+            run_keyctl(["setperm", serial, KEY_PERMISSIONS])
+            if matching_serials(keyring, description) != [serial]:
+                raise HelperError
+        except BaseException as error:
+            if serial is not None and not cleanup_created(serial, keyring):
+                raise HelperError from error
+            raise
+        action = "created"
+    return serial, action
+
+
+def main():
+    secure_process()
+    keyring, entry, create_only = parse_args(sys.argv[1:])
+    payload = read_secret()
+    lock_descriptor = acquire_lock()
+    try:
+        serial, action = store(keyring, entry, payload, create_only=create_only)
+    except HelperError:
+        fail("keyring operation failed closed")
+    finally:
+        os.close(lock_descriptor)
+    receipt = {"action": action, "entry": entry, "key_serial": int(serial)}
+    os.write(1, (json.dumps(receipt, sort_keys=True) + "\n").encode("ascii"))
+
+
+if __name__ == "__main__":
+    main()

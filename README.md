@@ -5,8 +5,69 @@ agents, and scripts. It gives these clients one structured seam instead of
 making them depend on a specific command-line tool, provider, or email
 protocol.
 
-Pimcamp is not an email app. It does not provide a user interface, a sync
-engine, a search index, or a general email automation platform.
+Pimcamp is not an email app. It does not provide a mailbox user interface, a
+sync engine, a search index, or a general email automation platform.
+
+A generic account setup UI is included in this development tree and its installer;
+it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
+and [integration requirements](docs/onboarding-integration.md). This setup UI
+configures the stack; mailbox viewers and composers remain independent clients.
+
+The [design preview](ui/onboarding/index.html) can be opened directly from a
+local checkout. It uses clearly labeled demo data and never connects or saves
+an email account. Its [design notes](ui/onboarding/DESIGN.md) describe the screens
+and integration boundary. Run `node tests/browser_onboarding.mjs ui/onboarding`
+with Node and Chromium installed for the optional browser layout checks.
+
+### Install the development candidate
+
+Requires Linux and Python 3.12 or newer. From the checkout:
+
+```sh
+python3 scripts/install --version onboarding-candidate
+~/.local/bin/pimcamp-setup
+```
+
+The installer includes the HTML/CSS, setup backend, and credential helpers. It
+does not install dependencies, change account data, or overwrite an existing
+release directory. Choose a new version name for a subsequent candidate.
+Himalaya 2.1.0 and Carillon 0.1.0 must be installed separately; supply their
+absolute paths with `--himalaya` and `--carillon` if they are not on PATH.
+
+Setup opens an authenticated browser session on the fixed loopback port 33281.
+IMAP & SMTP accepts your email address, editable server settings, and shared or
+separate login credentials. Passwords go to an unlocked Secret Service keyring
+through `secret-tool`, not into configuration files. Before asking for an email
+password, setup checks that keyring and lets you create it or unlock it with its
+own separate password. A headless installation still needs a working Secret
+Service provider; installing the utility alone does not provide one. No test
+email is sent during setup.
+
+Google requires an installation-owned OAuth application and Ortie 2.2.0. The
+development UI's **Set up Google sign-in** flow guides project/client registration
+at Google, securely imports the downloaded Desktop-client JSON, and returns to
+account sign-in. Install Ortie first (or supply its absolute path with `--ortie`).
+The imported secret is stored in the encrypted vault; the registration is loaded
+automatically on subsequent setup launches. See the [flow specification](docs/google-registration-flow.md) and
+[integration notes](docs/onboarding-integration.md) for application options and
+the remaining verification work. Opening the HTML file directly is only a demo;
+use `pimcamp-setup` to configure a real account.
+
+### Agents setting up Pimcamp for a user
+
+Follow the [agent-assisted setup guide](docs/agent-assisted-setup.md). It covers
+installation checks, encrypted password storage, opening the **live HTML UI**
+locally or through SSH, user handoffs, expired setup attempts, and verification.
+Run the setup commands for the user; ask them only for private input or provider
+consent. Do not ask for passwords in chat or substitute the demo HTML preview.
+
+A **password vault** (called a keyring on Linux) keeps email passwords and tokens
+encrypted on the mail host. A new vault needs a new password chosen by the user;
+an existing vault needs its existing password. This is separate from an email
+password and may be required again after restart. The setup UI explains this and
+creates or unlocks the vault on its own screen before asking for any email
+password; it never resets an existing vault. If the UI cannot reach the host's
+keyring daemon, the vault is created or unlocked on the host instead.
 
 ## Where Pimcamp fits
 
@@ -100,8 +161,8 @@ See [runtime installation](docs/runtime-installation.md) for release layout,
 dependency and credential requirements, and
 [Runtime acceptance](docs/runtime-acceptance.md) for the verified real-mail
 self-send, notification, and retrieval sequence from a test environment. The
-onboarding UI is separate, unfinished work and is not included in the runtime
-release.
+published v0.1.0 runtime release predates the included onboarding candidate
+described above.
 
 Pimcamp requires Linux, Python 3.12 or later, and an owner-only deployment
 configuration. The repository-local executable is `./pimcamp`.

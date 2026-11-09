@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Install Pimcamp and its included setup UI without changing account data."""
+
+import argparse
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+
+SOURCE = Path(__file__).resolve().parents[1]
+
+
+def install(prefix: Path, version: str):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", version):
+        raise ValueError("Use a release name containing letters, digits, dots, underscores or hyphens.")
+    prefix = prefix.absolute()
+    releases = prefix / "lib/pimcamp/releases"
+    destination = releases / version
+    commands = {"pimcamp": "pimcamp", "pimcamp-setup": "scripts/pimcamp-setup"}
+    # Refuse foreign executables before copying anything. Old Pimcamp releases
+    # remain intact; upgrading only changes these two owned executable links.
+    for name in commands:
+        link = prefix / "bin" / name
+        if link.exists() or link.is_symlink():
+            if not link.is_symlink() or not link.resolve().is_relative_to(releases.resolve()):
+                raise ValueError(f"Refusing to replace an unrelated executable: {link}")
+    releases.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(mode=0o755)  # Existing releases are never overwritten.
+    try:
+        for name in ("src", "scripts", "ui", "docs", "skills"):
+            if (SOURCE / name).is_dir():
+                shutil.copytree(SOURCE / name, destination / name,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for name in ("pimcamp", "README.md"):
+            shutil.copy2(SOURCE / name, destination / name)
+        for relative in ("pimcamp", "scripts/pimcamp-setup", "scripts/pimcamp-keyctl-read",
+                         "scripts/pimcamp-keyctl-write", "scripts/install"):
+            (destination / relative).chmod(0o755)
+    except Exception:
+        # This exact directory was created above by this invocation only.
+        shutil.rmtree(destination)
+        raise
+    bindir = prefix / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for name, relative in commands.items():
+        temporary = bindir / f".{name}-install-{os.getpid()}"
+        try:
+            temporary.symlink_to(destination / relative)
+            temporary.replace(bindir / name)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return destination
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", type=Path, default=Path.home() / ".local")
+    parser.add_argument("--version", required=True, help="Unique release name; an existing release is never overwritten")
+    args = parser.parse_args()
+    if sys.version_info < (3, 12):
+        parser.error("Pimcamp requires Python 3.12 or newer.")
+    try:
+        destination = install(args.prefix, args.version)
+    except (ValueError, OSError) as error:
+        parser.error(str(error))
+    print(f"Installed Pimcamp and account setup in {destination}")
+    print(f"Open account setup with {args.prefix.absolute() / 'bin/pimcamp-setup'}")
+    print("Account configuration and credentials were not changed. Lower mail tools are installed separately.")
+
+
+if __name__ == "__main__":
+    main()

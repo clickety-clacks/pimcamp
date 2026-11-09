@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f1ea">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#151311">
+  <meta name="description" content="Pimcamp account onboarding preview. Demo data only; no mail servers or Google services are contacted.">
+  <title>Connect your email · Pimcamp (preview)</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- Icon sprite. Every icon is used next to visible text; none carries meaning alone. -->
+  <svg class="icon-sprite" width="0" height="0" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-mark" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5" fill="currentColor"/><path class="brand__envelope" d="M7 8.5h10v7H7z" fill="none" stroke-width="1.7" stroke-linejoin="round"/><path class="brand__envelope" d="m7 8.5 5 3.6 5-3.6" fill="none" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m4.5 8 7.5 5 7.5-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-google" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.35-5.65" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 12h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="6" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="7.5" cy="7.5" r="1" fill="currentColor"/><circle cx="7.5" cy="16.5" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="currentColor"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="16.8" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="8" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6v5.5c0 4 3 7.5 7 9 4-1.5 7-5 7-9V6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m9.2 12 2 2 3.8-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18M10 6a9.8 9.8 0 0 1 2-.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.2 3.9M6.6 6.6C3.9 8.5 2.5 12 2.5 12S6 18.5 12 18.5c1.6 0 3-.4 4.2-1" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5m14 0h2.5M5.3 5.3l1.8 1.8m9.8 9.8 1.8 1.8M5.3 18.7l1.8-1.8m9.8-9.8 1.8-1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 20h6M12 16.5V20" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9m4 0h3M4 17h3m4 0h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="15" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M7 3.5h6.5L18.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5v5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8.5 13h7M8.5 16.5h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17.2 9.6 4.5 4.5 0 0 1 17 18.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="i-id" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8.5" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.8 15.5c.6-1.4 1.6-2 2.7-2s2.1.6 2.7 2M14 10h4M14 13.5h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="topbar__inner">
+      <a class="brand" href="#accounts" data-action="go-accounts">
+        <svg class="icon icon--lg brand__mark" aria-hidden="true"><use href="#i-mark"/></svg>
+        <span class="brand__name">Pimcamp</span>
+        <span class="brand__sub">Account setup</span>
+      </a>
+      <div class="topbar__tools">
+        <fieldset class="segmented" id="theme-picker">
+          <legend class="visually-hidden">Theme</legend>
+          <label class="segmented__item"><input type="radio" name="theme" value="system"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg><span>System</span></label>
+          <label class="segmented__item"><input type="radio" name="theme" value="light"><svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg><span>Light</span></label>
+          <label class="segmented__item"><input type="radio" name="theme" value="dark"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg><span>Dark</span></label>
+        </fieldset>
+        <button type="button" class="btn btn--secondary btn--small" data-action="toggle-demo" aria-expanded="false" aria-controls="demo-panel">
+          <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>Demo controls
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <p class="demo-banner" role="note">
+    <span class="tag tag--demo">Demo</span>
+    <span>Preview with sample data. Nothing here contacts a mail server or Google, and nothing is saved when you close the page.</span>
+  </p>
+
+  <main id="main" class="shell">
+    <aside class="rail" id="rail" aria-label="Setup progress"></aside>
+    <section class="stage" id="stage"></section>
+  </main>
+
+  <!-- Screen-reader announcements. Status for progress, alert for failures. -->
+  <div id="live-status" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  <div id="live-alert" class="visually-hidden" role="alert" aria-atomic="true"></div>
+
+  <!-- Demo controls: fixtures and simulated outcomes. Never part of the product UI. -->
+  <aside id="demo-panel" class="demo-panel" hidden aria-labelledby="demo-title">
+    <div class="demo-panel__head">
+      <h2 id="demo-title" class="demo-panel__title"><span class="tag tag--demo">Demo</span> Fixtures and outcomes</h2>
+      <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-demo" aria-label="Close demo controls"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+    </div>
+    <p class="demo-panel__note">These controls decide what the simulated service returns. They stand in for real results and are labeled as demo data everywhere they appear.</p>
+
+    <div class="demo-group">
+      <label class="field__label" for="demo-gallery">Jump to a state</label>
+      <select id="demo-gallery" data-demo="gallery">
+        <option value="">Choose a screen or state…</option>
+        <optgroup label="Accounts">
+          <option value="accounts-empty">Accounts · empty</option>
+          <option value="accounts-list">Accounts · connected and needs-reconnect</option>
+          <option value="accounts-details">Accounts · details expanded</option>
+        </optgroup>
+        <optgroup label="Setup">
+          <option value="choose">Choose connection</option>
+          <option value="details">Account details</option>
+          <option value="details-errors">Account details · errors</option>
+          <option value="storage-create">Password vault · create a new vault</option>
+          <option value="storage-unlock">Password vault · unlock the existing vault</option>
+          <option value="storage-unlock-rejected">Password vault · password not accepted</option>
+          <option value="storage-unavailable">Password vault · service not responding</option>
+          <option value="storage-unmanaged">Password vault · locked, out of this page’s reach</option>
+          <option value="imap">IMAP &amp; SMTP</option>
+          <option value="imap-errors">IMAP &amp; SMTP · errors</option>
+          <option value="imap-separate">IMAP &amp; SMTP · separate outgoing login</option>
+        </optgroup>
+        <optgroup label="Google">
+          <option value="google-ready">Google · ready</option>
+          <option value="google-progress">Google · consent in progress</option>
+          <option value="google-cancelled">Google · cancelled</option>
+          <option value="google-expired">Google · expired</option>
+          <option value="google-missing">Google · no OAuth client configured</option>
+          <option value="google-failed">Google · could not finish</option>
+          <option value="google-denied">Google · access denied</option>
+          <option value="google-authorized">Google · authorized, matching account</option>
+          <option value="google-mismatch">Google · authorized, different account</option>
+        </optgroup>
+        <optgroup label="Google sign-in setup (one-time registration)">
+          <option value="google-setup-intro">Setup · introduction</option>
+          <option value="google-setup-storage-missing">Setup · Google sign-in helper missing</option>
+          <option value="google-setup-unavailable">Setup · status check failed</option>
+          <option value="google-setup-project">Setup · Google Cloud project</option>
+          <option value="google-setup-platform">Setup · app and Desktop client</option>
+          <option value="google-setup-import">Setup · client file</option>
+          <option value="google-setup-import-invalid">Setup · client file rejected</option>
+          <option value="google-setup-saving">Setup · saving</option>
+          <option value="google-setup-save-failed">Setup · save could not be confirmed</option>
+          <option value="google-setup-saved">Setup · saved</option>
+        </optgroup>
+        <optgroup label="Review and connect">
+          <option value="review-imap">Review · IMAP</option>
+          <option value="review-google-remote">Review · Google on a remote installation</option>
+          <option value="connect-checking">Connect · checking</option>
+          <option value="connect-incoming-failed">Connect · incoming sign-in failed</option>
+          <option value="connect-storage-failed">Connect · password vault refused the password</option>
+          <option value="connect-save-failed">Connect · save failed</option>
+          <option value="connect-saved">Connect · saved</option>
+          <option value="connect-cancelled">Connect · cancelled</option>
+        </optgroup>
+        <optgroup label="Done">
+          <option value="done">Account connected</option>
+          <option value="done-google">Account connected · Google</option>
+          <option value="done-remote">Account connected · remote installation</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <fieldset class="demo-group">
+      <legend>Accounts fixture</legend>
+      <label class="field__label" for="demo-accounts">Existing accounts</label>
+      <select id="demo-accounts" data-demo="accountsScenario">
+        <option value="empty">None (empty state)</option>
+        <option value="connected">One connected account</option>
+        <option value="reconnect">One account needing reconnect</option>
+        <option value="both">Both</option>
+      </select>
+    </fieldset>
+
+    <fieldset class="demo-group">
+      <legend>Installation</legend>
+      <label class="field__label" for="demo-host">Installation host <span class="field__hint">Leave empty for “this computer”</span></label>
+      <input id="demo-host" type="text" data-demo="installation.host" placeholder="e.g. demo-host.example" autocomplete="off" spellcheck="false">
+      <label class="check"><input type="checkbox" data-demo="installation.remote"><span>Remote installation (show host on review)</span></label>
+      <label class="check"><input type="checkbox" data-demo="oauthClientConfigured"><span>Google OAuth client is configured</span></label>
+      <label class="check"><input type="checkbox" data-demo="googleHelperAvailable"><span>Google sign-in helper is installed</span></label>
+      <label class="field__label" for="demo-storage">Encrypted password vault on the host</label>
+      <select id="demo-storage" data-demo="storage">
+        <option value="ready">Unlocked and working</option>
+        <option value="missing">Not created yet</option>
+        <option value="locked">Exists but locked (“wrong” is rejected)</option>
+        <option value="unavailable">Vault service not responding</option>
+        <option value="unmanaged">Locked, and this page can’t reach the vault service</option>
+      </select>
+      <label class="field__label" for="demo-google-setup">Saving the Google registration returns</label>
+      <select id="demo-google-setup" data-demo="googleSetupOutcome">
+        <option value="saved">Saved (client ID returned)</option>
+        <option value="rejected">Rejected (not a usable Desktop app client)</option>
+        <option value="save-failed">Fails (protected storage refused the save)</option>
+        <option value="unconfirmed">Never answers (save cannot be confirmed)</option>
+      </select>
+    </fieldset>
+
+    <fieldset class="demo-group">
+      <legend>Simulated outcomes</legend>
+      <label class="field__label" for="demo-google">Google authorization returns</label>
+      <select id="demo-google" data-demo="googleOutcome">
+        <option value="authorized">Authorized, same address as entered</option>
+        <option value="authorized-different">Authorized, a different address</option>
+        <option value="cancelled">Cancelled at Google</option>
+        <option value="expired">Expired before completion</option>
+        <option value="denied-policy">Denied (access_denied or organization policy)</option>
+        <option value="failed">Fails (no callback could be verified)</option>
+      </select>
+      <label class="field__label" for="demo-incoming">Incoming sign-in</label>
+      <select id="demo-incoming" data-demo="outcomes.incoming"><option value="pass">Passes</option><option value="fail">Fails (rejected credentials)</option><option value="unreachable">Fails (server unreachable)</option><option value="storage">Fails (password vault refused the password)</option></select>
+      <label class="field__label" for="demo-outgoing">Outgoing sign-in</label>
+      <select id="demo-outgoing" data-demo="outcomes.outgoing"><option value="pass">Passes</option><option value="fail">Fails (rejected credentials)</option></select>
+      <label class="field__label" for="demo-save">Saving configuration</label>
+      <select id="demo-save" data-demo="outcomes.save"><option value="pass">Passes</option><option value="fail">Fails</option><option value="expired">Fails (setup attempt expired)</option></select>
+      <label class="field__label" for="demo-latency">Simulated delay <span class="field__hint">milliseconds per operation</span></label>
+      <input id="demo-latency" type="text" inputmode="numeric" data-demo="latency">
+    </fieldset>
+
+    <div class="demo-panel__foot">
+      <button type="button" class="btn btn--secondary btn--small" data-action="demo-reset">Reset demo</button>
+    </div>
+  </aside>
+
+  <!-- ===================== Templates ===================== -->
+
+  <template id="tpl-rail-steps">
+    <div class="rail__inner">
+      <p class="rail__eyebrow" data-slot="eyebrow">Add account</p>
+      <ol class="steps" data-slot="steps"></ol>
+      <p class="rail__account" data-slot="account" hidden></p>
+    </div>
+  </template>
+
+  <template id="tpl-rail-intro">
+    <div class="rail__inner">
+      <p class="rail__eyebrow">Before you start</p>
+      <h2 class="rail__heading">What you’ll need</h2>
+      <ul class="rail__list">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg><span>The email address you want to connect.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-google"/></svg><span>For Google accounts, a browser window to approve access.</span></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg><span>For other providers, the server names and your password or app password.</span></li>
+      </ul>
+      <p class="rail__foot">Setup takes about two minutes. Nothing is changed until you choose “Connect account”.</p>
+    </div>
+  </template>
+
+  <template id="tpl-accounts">
+    <div class="screen" data-screen="accounts">
+      <div class="empty" data-slot="empty">
+        <div class="empty__art" aria-hidden="true"><svg class="icon icon--xl"><use href="#i-mail"/></svg></div>
+        <h1 class="screen__title" tabindex="-1">Connect your email</h1>
+        <p class="lede">Pimcamp works with the email account you already have. Connect one, and Pimcamp can read your mail, send on your behalf, and notice new messages as they arrive. Your settings stay on this installation.</p>
+        <div class="actions actions--center">
+          <button type="button" class="btn btn--primary btn--large" data-action="add-account"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add account</button>
+        </div>
+      </div>
+      <div data-slot="list" hidden>
+        <header class="screen__header">
+          <div>
+            <h1 class="screen__title" tabindex="-1">Accounts</h1>
+            <p class="screen__lede">Each account is checked and reconnected on its own. Adding an account never replaces one that already exists.</p>
+          </div>
+          <button type="button" class="btn btn--primary" data-action="add-account"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add account</button>
+        </header>
+        <ul class="account-list" data-slot="accounts"></ul>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-account-row">
+    <li class="account">
+      <div class="account__avatar" aria-hidden="true" data-slot="initial"></div>
+      <div class="account__body">
+        <p class="account__address"><span data-slot="address"></span> <span class="tag" data-slot="tag" hidden></span></p>
+        <p class="account__meta"><span data-slot="name"></span><span class="status" data-slot="status"></span></p>
+        <p class="account__note" data-slot="note" hidden></p>
+      </div>
+      <div class="account__actions">
+        <button type="button" class="btn btn--secondary btn--small" data-action="check-account"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check connection</button>
+        <button type="button" class="btn btn--ghost btn--small" data-action="reconnect-account">Reconnect</button>
+      </div>
+      <details class="disclosure disclosure--help account__details" data-slot="details">
+        <summary><span>Details</span><span class="visually-hidden" data-slot="details-for"></span></summary>
+        <div class="disclosure__body">
+          <dl class="summary summary--compact" data-slot="detail-list"></dl>
+        </div>
+      </details>
+    </li>
+  </template>
+
+  <template id="tpl-choose">
+    <div class="screen" data-screen="choose">
+      <h1 class="screen__title" tabindex="-1">How do you sign in to this account?</h1>
+      <p class="screen__lede">Pick the option that matches your provider. You can change this later.</p>
+      <div class="choices" role="group" aria-label="Connection type">
+        <button type="button" class="choice" data-action="choose-method" data-method="google">
+          <span class="choice__icon"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-google"/></svg></span>
+          <span class="choice__body">
+            <span class="choice__title">Google / Gmail</span>
+            <span class="choice__desc">For @gmail.com addresses and Google Workspace accounts, including custom domains hosted on Google. You approve access on Google’s site.</span>
+          </span>
+          <svg class="icon choice__arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </button>
+        <button type="button" class="choice" data-action="choose-method" data-method="imap">
+          <span class="choice__icon"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-server"/></svg></span>
+          <span class="choice__body">
+            <span class="choice__title">IMAP &amp; SMTP</span>
+            <span class="choice__desc">For most other providers and self-hosted mail. You enter server details and a password. Namecheap Private Email is available as a preset.</span>
+          </span>
+          <svg class="icon choice__arrow" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </button>
+      </div>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Not sure? If you sign in to your mail through a Google page, choose Google. Otherwise choose IMAP &amp; SMTP.</span></p>
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-details">
+    <form class="screen" data-screen="details" novalidate>
+      <h1 class="screen__title" tabindex="-1">Account details</h1>
+      <p class="screen__lede">Enter the account you want to connect. Pimcamp doesn’t guess it from this computer or from who is signed in.</p>
+      <div class="field">
+        <label class="field__label" for="f-email">Email address</label>
+        <p class="field__hint" id="f-email-hint">The address people send mail to, for example alex@example.com.</p>
+        <input id="f-email" name="email" type="email" autocomplete="email" autocapitalize="off" spellcheck="false" inputmode="email" aria-describedby="f-email-hint" required>
+        <p class="field__error" id="f-email-error" hidden></p>
+      </div>
+      <div class="field">
+        <label class="field__label" for="f-name">Account name <span class="field__optional">optional</span></label>
+        <p class="field__hint" id="f-name-hint">Only used to label this account in Pimcamp. Anything goes, including @ and dots.</p>
+        <input id="f-name" name="name" type="text" autocomplete="off" maxlength="80" aria-describedby="f-name-hint">
+        <p class="field__error" id="f-name-error" hidden></p>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
+        <button type="submit" class="btn btn--primary">Continue</button>
+      </div>
+    </form>
+  </template>
+
+  <!-- Encrypted password vault prerequisite. Shown after Account details and before any email password or Google sign-in is requested. -->
+  <template id="tpl-storage">
+    <form class="screen" data-screen="storage" novalidate>
+      <h1 class="screen__title" tabindex="-1" data-slot="title">Encrypted password vault</h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <p class="notice notice--demo" data-slot="demo-notice" hidden><span class="tag tag--demo">Demo</span><span>This vault check is simulated. Nothing is created, unlocked or saved.</span></p>
+      <div class="notice notice--danger" data-slot="notice" role="status" hidden></div>
+      <p>Pimcamp needs a safe place on <span data-slot="vault-host">the mail host</span> to keep your email passwords and sign-in tokens. Linux calls this encrypted password vault a “keyring.” It lets Pimcamp access your account without asking for the email password every time. The vault password unlocks that storage; it is not a password requested by your email provider. While unlocked, programs running as your OS user may be able to access its stored credentials.</p>
+      <div class="group" data-slot="create" hidden>
+        <p>Choose a new, strong vault password and confirm it. It does not need to match your email or computer login password. Save it in your password manager with the mail host’s name. You may need it after a restart; without it, stored credentials may be inaccessible and the email account may need reconnecting.</p>
+        <div class="field">
+          <label class="field__label" for="f-vault-new">New vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-new" name="f-vault-new" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-new" aria-pressed="false" aria-label="Show new vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-new-error" hidden></p>
+        </div>
+        <div class="field">
+          <label class="field__label" for="f-vault-confirm">Confirm vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-confirm" name="f-vault-confirm" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-confirm" aria-pressed="false" aria-label="Show confirm vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-confirm-error" hidden></p>
+        </div>
+      </div>
+      <div class="group" data-slot="unlock" hidden>
+        <p>Enter the existing vault password you chose earlier. This unlocks the same vault; it does not create a new one or change your email password.</p>
+        <div class="field">
+          <label class="field__label" for="f-vault-pass">Vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-pass" name="f-vault-pass" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-pass" aria-pressed="false" aria-label="Show vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-pass-error" hidden></p>
+        </div>
+      </div>
+      <div class="group" data-slot="wait" hidden>
+        <p data-slot="wait-text"></p>
+      </div>
+      <div class="actions" data-slot="actions"></div>
+    </form>
+  </template>
+
+  <template id="tpl-imap">
+    <form class="screen" data-screen="imap" novalidate>
+      <h1 class="screen__title" tabindex="-1">Mail server settings</h1>
+      <p class="screen__lede">Your provider’s help pages usually list these under “IMAP settings”. Presets only fill in values; everything stays editable.</p>
+
+      <div class="field field--preset">
+        <label class="field__label" for="f-preset">Start from a preset <span class="field__optional">optional</span></label>
+        <div class="field__row">
+          <select id="f-preset" name="preset">
+            <option value="">Choose a preset…</option>
+            <option value="domain">Guess from my address (imap.&lt;domain&gt; / smtp.&lt;domain&gt;)</option>
+            <option value="namecheap">Namecheap Private Email</option>
+          </select>
+          <button type="button" class="btn btn--secondary" data-action="apply-preset">Fill in</button>
+        </div>
+        <p class="field__hint" id="f-preset-note" data-slot="preset-note" hidden></p>
+      </div>
+
+      <fieldset class="group">
+        <legend class="group__legend"><span class="group__icon"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg></span>Incoming mail (IMAP)</legend>
+        <p class="group__desc">Where Pimcamp reads your mail.</p>
+        <div class="field">
+          <label class="field__label" for="f-in-host">Incoming server</label>
+          <p class="field__hint" id="f-in-host-hint">For example imap.example.com.</p>
+          <input id="f-in-host" name="in-host" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="f-in-host-hint">
+          <p class="field__error" id="f-in-host-error" hidden></p>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label class="field__label" for="f-in-port">Port</label>
+            <input id="f-in-port" name="in-port" type="text" inputmode="numeric" autocomplete="off" size="6">
+            <p class="field__error" id="f-in-port-error" hidden></p>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-in-security">Connection security</label>
+            <select id="f-in-security" name="in-security">
+              <option value="tls">TLS (usually port 993)</option>
+              <option value="starttls">STARTTLS (usually port 143)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field__label" for="f-in-user">Username</label>
+          <p class="field__hint" id="f-in-user-hint">Often your full email address. Edit it if your provider uses something else.</p>
+          <input id="f-in-user" name="in-username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" aria-describedby="f-in-user-hint">
+          <p class="field__error" id="f-in-user-error" hidden></p>
+        </div>
+        <div class="field">
+          <label class="field__label" for="f-in-pass">Password</label>
+          <div class="field__row field__row--password">
+            <input id="f-in-pass" name="in-password" type="password" autocomplete="current-password" aria-describedby="f-in-pass-hint">
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-in-pass" aria-pressed="false" aria-label="Show password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__hint" id="f-in-pass-hint">If your account uses two-step verification, your provider may require an app password created in its security settings instead of your normal password.</p>
+          <p class="field__error" id="f-in-pass-error" hidden></p>
+        </div>
+      </fieldset>
+
+      <fieldset class="group">
+        <legend class="group__legend"><span class="group__icon"><svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg></span>Outgoing mail (SMTP)</legend>
+        <p class="group__desc">Where Pimcamp sends from. It only sends when you ask it to.</p>
+        <div class="field">
+          <label class="field__label" for="f-out-host">Outgoing server</label>
+          <p class="field__hint" id="f-out-host-hint">For example smtp.example.com.</p>
+          <input id="f-out-host" name="out-host" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="f-out-host-hint">
+          <p class="field__error" id="f-out-host-error" hidden></p>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label class="field__label" for="f-out-port">Port</label>
+            <input id="f-out-port" name="out-port" type="text" inputmode="numeric" autocomplete="off" size="6">
+            <p class="field__error" id="f-out-port-error" hidden></p>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-out-security">Connection security</label>
+            <select id="f-out-security" name="out-security">
+              <option value="tls">TLS (usually port 465)</option>
+              <option value="starttls">STARTTLS (usually port 587)</option>
+            </select>
+          </div>
+        </div>
+        <label class="check"><input id="f-same-login" name="same-login" type="checkbox" checked><span>Use the same login for outgoing mail</span></label>
+        <div class="subgroup" data-slot="outgoing-login" hidden>
+          <div class="field">
+            <label class="field__label" for="f-out-user">Outgoing username</label>
+            <input id="f-out-user" name="out-username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false">
+            <p class="field__error" id="f-out-user-error" hidden></p>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-out-pass">Outgoing password</label>
+            <div class="field__row field__row--password">
+              <input id="f-out-pass" name="out-password" type="password" autocomplete="current-password">
+              <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-out-pass" aria-pressed="false" aria-label="Show outgoing password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+            </div>
+            <p class="field__error" id="f-out-pass-error" hidden></p>
+          </div>
+        </div>
+      </fieldset>
+
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
+        <button type="submit" class="btn btn--primary">Continue</button>
+      </div>
+    </form>
+  </template>
+
+  <template id="tpl-google">
+    <div class="screen" data-screen="google">
+      <h1 class="screen__title" tabindex="-1">Sign in with Google</h1>
+      <p class="screen__lede">You approve access on Google’s site, in your browser. Pimcamp never sees or stores your Google password; it keeps only the permission Google grants, and renews it automatically.</p>
+
+      <div class="panel" data-slot="state"></div>
+
+      <!-- Recovery help. Always present; opened by the renderer when Google refused or never called back. -->
+      <details class="disclosure disclosure--help" data-slot="help">
+        <summary><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Trouble with Google sign-in?</span></summary>
+        <div class="disclosure__body">
+          <div class="help-item">
+            <p class="help-item__title">Google shows an error and this page doesn’t change</p>
+            <p>When Google stops at an error, it never sends you back here, so this page keeps waiting. Close the Google window, choose Cancel here, fix the cause with the notes below, then choose Try again. Nothing is saved while you wait.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">“Pimcamp has not completed the Google verification process” or “Error 403: access_denied”</p>
+            <p>This usually means the registration for this installation is in Testing at Google and <span data-slot="help-email"></span> isn’t on its Test users list. It doesn’t necessarily mean your organization blocked the app. Whoever registered this installation opens Audience in Google Cloud console, adds <span data-slot="help-email"></span> under Test users, saves, and checks that the address appears in Google’s list. Then choose Try again here. Pimcamp can’t check that setting for you.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">“This app is blocked” or “Your admin hasn’t approved this app”</p>
+            <p>A Google Workspace organization can restrict which apps may access mail. Ask its administrator to allow this app; Pimcamp can’t work around that. If the organization permits app passwords, IMAP &amp; SMTP is an alternative.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">Google says the app is only for its organization</p>
+            <p>The registration was made with the Internal audience, which accepts only mailboxes inside that Workspace organization. A mailbox outside it needs a registration with the External audience.</p>
+          </div>
+          <div class="help-item">
+            <p class="help-item__title">Google offers a different account</p>
+            <p>Choose <span data-slot="help-email"></span> in Google’s account picker. If you approve a different account, Pimcamp shows which one Google authorized and asks you to choose; it never switches silently.</p>
+          </div>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
+        <span class="actions__spacer"></span>
+        <span data-slot="primary-actions" class="actions__group"></span>
+      </div>
+    </div>
+  </template>
+
+  <!-- One-time registration of this installation with Google. Separate from choosing a mailbox. -->
+  <template id="tpl-google-setup">
+    <div class="screen" data-screen="google-setup">
+      <p class="screen__eyebrow" data-slot="eyebrow">Google sign-in setup</p>
+      <h1 class="screen__title" tabindex="-1" data-slot="title"></h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <ol class="stepper" data-slot="stepper" aria-label="Setup parts" hidden></ol>
+      <p class="notice notice--demo" data-slot="demo-notice" hidden><span class="tag tag--demo">Demo</span><span>This result is simulated. Nothing was sent anywhere or saved.</span></p>
+      <div class="gsetup" data-slot="body"></div>
+      <div class="actions" data-slot="actions"></div>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-intro">
+    <div class="gsetup__part">
+      <div class="notice notice--warning notice--top" data-slot="storage" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">The Google sign-in helper is missing</p>
+          <p>This installation needs Ortie 2.2.0 to handle Google sign-in and renew access. Ask the agent or installation owner to install it and reopen setup with its path. You can follow the Google registration steps now, but cannot save the client file until the helper is available. Password storage is checked separately when saving.</p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="recheck-storage"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+        </div>
+      </div>
+      <ol class="guide" aria-label="What you will do">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Create a Google Cloud project and turn on Gmail</p>
+            <p class="guide__text">A project is the container Google uses for this registration. Turning on Gmail inside it lets the registration be used for mail.</p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-id"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Describe the app and create a Desktop app client</p>
+            <p class="guide__text">You name the registration, say who may use it, add the mailbox you’re connecting as a test user if Google puts the app in Testing, list the mail permission it asks for, and create a client. Google then offers a small file to download.</p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg></span>
+          <div class="guide__body">
+            <p class="guide__title">Bring that file back here</p>
+            <p class="guide__text">Pimcamp keeps the secret part in this installation’s protected storage and remembers only the public client ID. The file is never shown here.</p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>You’ll need a Google account that can sign in to Google Cloud console. It can be any account you control; it doesn’t have to be the mailbox you’re connecting. Everything happens on Google’s own pages, opened in a new tab. <span data-slot="keep"></span></span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-project">
+    <div class="gsetup__part">
+      <ol class="guide">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">1</span>
+          <div class="guide__body">
+            <p class="guide__title">Create a project, or pick one you already have</p>
+            <p class="guide__text">Sign in to Google Cloud console and create a project. Give it a name you’ll recognize later, such as Pimcamp. The organization and location fields can stay as Google suggests. If you already have a project for this, select it instead.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener noreferrer">Open project creation<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">2</span>
+          <div class="guide__body">
+            <p class="guide__title">Turn on the Gmail API for that project</p>
+            <p class="guide__text">With your project selected at the top of the page, open the Gmail API page and choose Enable. This tells Google the registration may be used for mail. It doesn’t give anyone access to a mailbox yet.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener noreferrer">Open the Gmail API page<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Nothing in this part connects a mailbox. Google asks for your consent for each mailbox later, back in Pimcamp. Choose Next once Gmail shows as enabled.</span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-platform">
+    <div class="gsetup__part">
+      <ol class="guide">
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">1</span>
+          <div class="guide__body">
+            <p class="guide__title">Branding</p>
+            <p class="guide__text">In the same project, open Google Auth Platform. If Google asks you to get started, follow its short form; otherwise open Branding. Name the app (for example Pimcamp) and give a support email address you control. This is what Google’s consent page will show you later.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener noreferrer">Open Branding<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">2</span>
+          <div class="guide__body">
+            <p class="guide__title">Audience</p>
+            <p class="guide__text">Choose <strong>External</strong> for a personal @gmail.com address, or for any mailbox outside a Google Workspace organization you administer. Choose <strong>Internal</strong> only if you’re registering inside your own Workspace organization and every mailbox you’ll connect belongs to it.</p>
+            <div class="notice notice--warning">
+              <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+              <div class="notice__body">
+                <p class="notice__title">External apps start in Testing</p>
+                <p>While the app is in Testing, only listed test users can sign in (next step), and Google ends mail access after 7 days, so you will need to reconnect the account. Publishing the app for longer-lived access is Google’s own process; Pimcamp can’t shorten or skip it.</p>
+                <p>If your organization restricts which apps may access mail, ask its administrator to allow this one rather than working around the policy.</p>
+              </div>
+            </div>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item" data-slot="test-user-step">
+          <span class="guide__marker" aria-hidden="true">3</span>
+          <div class="guide__body">
+            <p class="guide__title">Test users: add <span data-slot="test-user-email"></span></p>
+            <p class="guide__text"><strong>If the audience is External and publishing status is Testing</strong>, Google refuses sign-in from an address that isn’t on the Test users list. On the Audience page, find <strong>Test users</strong>, choose <strong>Add users</strong>, and enter exactly the address you’re connecting. Published apps do not use this testing checklist:</p>
+            <p class="guide__value"><code data-slot="test-user-email"></code></p>
+            <p class="guide__text"><strong>Save</strong>, then check that the address appears in Google’s list before you leave the page; an entry that wasn’t saved silently disappears. Pimcamp can’t check this Google-side setting for you, so this step is the one to revisit if Google later says the app isn’t verified.</p>
+            <p class="guide__text"><strong>If you chose Internal</strong>, there is no Test users list and there is nothing to add here.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">Open Audience<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">4</span>
+          <div class="guide__body">
+            <p class="guide__title">Data access</p>
+            <p class="guide__text">Add the Gmail permission Pimcamp uses to read, send and watch mail. Choose Add or remove scopes and add <code>https://mail.google.com/</code>. Google describes it as reading, composing, sending and permanently deleting mail; Pimcamp only performs the mail actions you ask for.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener noreferrer">Open Data access<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+        <li class="guide__item">
+          <span class="guide__marker" aria-hidden="true">5</span>
+          <div class="guide__body">
+            <p class="guide__title">Create a Desktop app client</p>
+            <p class="guide__text">Open Clients and choose Create client. Set the application type to <strong>Desktop app</strong> and name it. When Google shows the new client, choose Download JSON and keep that file private; it’s what you bring back in the next part. A Desktop app client needs no redirect address.</p>
+            <p class="guide__actions"><a class="btn btn--secondary btn--small" href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener noreferrer">Open Clients<svg class="icon" aria-hidden="true"><use href="#i-external"/></svg><span class="visually-hidden"> (Google, new tab)</span></a></p>
+          </div>
+        </li>
+      </ol>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Never paste the file’s contents into chat, email or a shared document. In the next part you choose the file itself; its contents are sent only to this installation.</span></p>
+    </div>
+  </template>
+
+  <template id="tpl-gsetup-import">
+    <form class="gsetup__part" id="gsetup-import-form" novalidate>
+      <div class="notice notice--warning notice--top" data-slot="storage" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">The Google sign-in helper is missing</p>
+          <p>Ask the agent or installation owner to install Ortie 2.2.0 and reopen setup with its path, then choose Check again. The file will not be sent while the helper is unavailable. An unlocked encrypted password vault on the host is also required when saving; see “About the encrypted password vault” below.</p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="recheck-storage"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check again</button></div>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field__label" for="f-client-file">Client file from Google</label>
+        <p class="field__hint" id="f-client-file-hint">The JSON file Google offered when you created the Desktop app client. Its name starts with “client_secret” and it is usually in your Downloads folder.</p>
+        <input id="f-client-file" name="client-file" type="file" accept="application/json,.json" aria-describedby="f-client-file-hint">
+        <p class="filepick__meta" data-slot="file-meta" hidden><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span data-slot="file-name"></span></p>
+        <p class="field__error" id="f-client-file-error" hidden></p>
+      </div>
+      <div class="notice notice--danger notice--top" data-slot="save-error" hidden role="status">
+        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="notice__body">
+          <p class="notice__title" data-slot="save-error-title"></p>
+          <p data-slot="save-error-text"></p>
+          <div class="notice__actions"><button type="button" class="btn btn--secondary btn--small" data-action="check-app-status"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Check what was saved</button></div>
+        </div>
+      </div>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Pimcamp sends the file’s contents once to this installation. The installation checks that it describes a Desktop app client, keeps the secret part in the encrypted password vault on the host, and remembers only the public client ID. Nothing from the file is shown here or kept in this browser.</span></p>
+      <div data-slot="vault"></div>
+    </form>
+  </template>
+
+  <template id="tpl-gsetup-saved">
+    <div class="gsetup__part">
+      <dl class="summary" data-slot="summary"></dl>
+      <div class="notice notice--warning" data-slot="refresh-note" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+        <div class="notice__body">
+          <p class="notice__title">Saved, but the setup page couldn’t be refreshed</p>
+          <p>The registration is stored. On the Google sign-in page, choose Check again so it picks up the new registration.</p>
+        </div>
+      </div>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>If the app is in Testing at Google, only addresses on its Test users list can sign in, and each mailbox’s access ends after 7 days, so you will need to reconnect it. This registration stays saved. The downloaded JSON file also remains on your computer; keep it private or remove it yourself after importing.</span></p>
+    </div>
+  </template>
+
+  <template id="tpl-review">
+    <div class="screen" data-screen="review">
+      <h1 class="screen__title" tabindex="-1">Review and connect</h1>
+      <p class="screen__lede">Pimcamp will sign in to check these settings and save them. No mail is sent during setup.</p>
+      <dl class="summary" data-slot="summary"></dl>
+      <p class="help"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Passwords and Google permissions go into the encrypted password vault on the host and are never shown here.</span></p>
+      <div data-slot="vault"></div>
+      <div class="actions">
+        <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
+        <button type="button" class="btn btn--primary" data-action="connect">Connect account</button>
+      </div>
+    </div>
+  </template>
+
+  <!-- Shared explanation of the encrypted password vault. Rendered on Review, on the client-file part, and inside storage failures. -->
+  <template id="tpl-vault-help">
+    <details class="disclosure disclosure--help" data-slot="vault-help">
+      <summary><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg><span>About the encrypted password vault</span></summary>
+      <div class="disclosure__body">
+        <p>Pimcamp keeps this account’s password or Google permission in an encrypted vault on <span data-slot="vault-host">the mail host</span>. The vault has a password of its own. It is separate from your email password, and your email provider never sees it.</p>
+        <ul class="disclosure__list">
+          <li><strong>Host without a vault yet:</strong> you choose a new vault password once, on this page’s vault step, and keep it in a password manager. This is the only time a new vault password is created.</li>
+          <li><strong>Vault already there:</strong> it is unlocked with its existing password. A new vault is never created to replace one that already exists.</li>
+          <li><strong>Never in chat:</strong> the vault password is typed only into this page’s vault step or the host’s own unlock prompt. Nobody should ask you to send it in a chat or an email.</li>
+        </ul>
+        <p>If the vault turns out to be locked or missing, this page takes you back to its vault step to unlock or create it. When this page can’t reach the vault service itself, the installation owner repairs it on the host with the installation’s existing storage provider. What you have entered here stays as it is while that happens.</p>
+      </div>
+    </details>
+  </template>
+
+  <template id="tpl-summary-row">
+    <div class="summary__row">
+      <dt data-slot="term"></dt>
+      <dd data-slot="value"></dd>
+    </div>
+  </template>
+
+  <template id="tpl-connect">
+    <div class="screen" data-screen="connect">
+      <h1 class="screen__title" tabindex="-1" data-slot="title">Connecting…</h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <p class="notice notice--demo" data-slot="demo-notice"><span class="tag tag--demo">Demo</span><span>These results are simulated. No server was contacted.</span></p>
+      <ol class="checks" data-slot="checks" aria-label="Connection steps"></ol>
+      <div class="notice" data-slot="notice" hidden></div>
+      <div class="actions" data-slot="actions"></div>
+    </div>
+  </template>
+
+  <template id="tpl-check-row">
+    <li class="check-row" data-state="waiting">
+      <span class="check-row__icon" aria-hidden="true">
+        <svg class="icon icon--waiting"><use href="#i-dot"/></svg>
+        <span class="spinner icon--checking"></span>
+        <svg class="icon icon--passed"><use href="#i-check"/></svg>
+        <svg class="icon icon--failed"><use href="#i-x"/></svg>
+        <svg class="icon icon--unavailable"><use href="#i-minus"/></svg>
+      </span>
+      <div class="check-row__body">
+        <p class="check-row__label"><span data-slot="label"></span> <span class="status" data-slot="state"></span></p>
+        <p class="check-row__message" data-slot="message"></p>
+        <div class="check-row__actions" data-slot="actions" hidden></div>
+      </div>
+    </li>
+  </template>
+
+  <template id="tpl-done">
+    <div class="screen" data-screen="done">
+      <div class="done__art" aria-hidden="true" data-slot="art"><svg class="icon icon--xl"><use href="#i-check"/></svg></div>
+      <h1 class="screen__title" tabindex="-1" data-slot="title">Account connected</h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <dl class="summary" data-slot="summary" aria-label="Connected account"></dl>
+      <ul class="caps" data-slot="caps" aria-label="What this account can do"></ul>
+      <p class="help done__note" data-slot="note"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>You can manage this account and view its connection details from Accounts.</span></p>
+      <div class="actions">
+        <button type="button" class="btn btn--secondary" data-action="go-accounts">Back to accounts</button>
+        <button type="button" class="btn btn--primary" data-action="add-account"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add another account</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-cap-row">
+    <li class="cap" data-state="ready">
+      <span class="cap__icon" aria-hidden="true"><svg class="icon icon--passed"><use href="#i-check"/></svg><svg class="icon icon--unavailable"><use href="#i-minus"/></svg></span>
+      <span class="cap__body"><span class="cap__label" data-slot="label"></span><span class="status" data-slot="state"></span><span class="cap__desc" data-slot="desc"></span></span>
+    </li>
+  </template>
+
+  <template id="tpl-loading">
+    <div class="screen screen--loading" role="status">
+      <span class="spinner spinner--lg" aria-hidden="true"></span>
+      <p class="loading__text" data-slot="text">Loading…</p>
+    </div>
+  </template>
+</body>
+</html>

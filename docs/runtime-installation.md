@@ -1,4 +1,8 @@
-# Runtime installation
+# Runtime installation (v0.1.0 release)
+
+The newer onboarding candidate includes `scripts/install` and `pimcamp-setup`;
+see [the README](../README.md#install-the-development-candidate). The release
+instructions below describe the already published v0.1.0 runtime.
 
 The runtime is a local command-line boundary, not a background mail server.
 Each request starts a process; `subscribe_new_mail` stays open for its client

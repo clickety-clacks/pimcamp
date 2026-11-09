@@ -11,6 +11,63 @@ Pimcamp owns the integrating UI. Himalaya owns protocol operations; the installe
 
 ## Scope and screens
 
+### Post-onboarding corrections (2026-09-08)
+
+These corrections supersede the earlier references to partial notification
+status on the completion screen. Authentication plus saved configuration ends
+onboarding with **Account connected**, the address and target host. Notification
+verification is not part of the setup sequence and must not block it, show a
+yellow completion warning, or trigger a test message. Truthful notification
+information belongs in expandable account details; no test action is offered
+without a real supported implementation.
+
+Google's Test users list needs a distinct checkpoint with the entered address,
+explicit Save-and-check instructions, and an explanation that Pimcamp cannot
+verify that setting. Show contextual recovery help even while waiting for a
+Google callback: provider errors may remain in the Google window. Distinguish
+testing restrictions from organization policy; do not infer a policy violation
+from generic access denial.
+
+Explain encrypted vault storage and its separate password in the UI as well as
+the installation guide. A storage failure calls for vault repair, not another
+email password. Keep form values during recoverable errors. Renew known-expired,
+unsaved attempts when safe; never renew an ambiguous save automatically. Check a
+read-only saved receipt after a lost response. A service restart or lost browser
+authorization can require a new handoff and inspection of saved accounts.
+
+The agent reuses the one setup server, tunnel and browser origin. It must not
+change ports or restart a working form underneath the user. UI changes in this
+correction are designed directly with Fable 5.1; the agent owns integration,
+verification and the authorized deployment.
+
+### Password-storage prerequisite copy (2026-09-08 clarification)
+
+Before requesting email credentials, explain any missing encrypted-storage
+prerequisite in ordinary language. A vault/keyring stores email passwords and
+tokens on the mail host; its unlock password is separate from the provider's
+password. Distinguish **creating** a vault (choose and confirm a new password)
+from **unlocking** one (enter the existing password). Explain password-manager
+storage, possible unlock after restart, and the consequence of losing access.
+State that programs under the same OS user may access credentials while unlocked.
+Use the copy in [agent-assisted setup](agent-assisted-setup.md#explain-password-storage-before-prompting).
+
+The included HTML UI now implements this as the **Encrypted password vault**
+screen (`state.screen === 'storage'`), reached from Account details before the
+IMAP & SMTP or Google screen and from the connect screen's vault failure. The
+backend observes the default collection through the Secret Service itself
+(missing, locked, ready or unavailable) and never infers readiness from a helper
+exit code: after an unlock or create request it re-reads the collection and
+proves a store/read/remove round trip before reporting ready. Create is refused
+when a vault already exists and unlock is refused when none exists, so an
+existing vault is never reset or overwritten. The vault password travels once in
+the request body and is not logged, stored, or echoed. Unlock and create reach
+the already running keyring daemon through its control socket; no competing
+daemon is started. When that socket is out of reach, or the service does not
+answer, the screen explains the state, keeps everything entered, and asks the
+installation owner to act on the host.
+
+### Email account screens
+
 1. Accounts / welcome: empty state titled “Connect your email”, brief explanation of what Pimcamp enables, primary “Add account”. Existing accounts show address, optional display name, connection status, and “Check connection” / “Reconnect”. Never silently replace an existing account.
 2. Choose connection: “Google / Gmail” and “IMAP & SMTP”. Explain that Google Workspace custom domains use the Google option. Namecheap may be an optional preset within IMAP settings, never a top-level product identity. No speculative unsupported provider buttons.
 3. Account details: user-entered “Email address” with example alex@example.com; optional “Account name” used only locally. Accept @ and . in account names. Do not infer the account being installed from the operator, current browser session, or test fixture.
