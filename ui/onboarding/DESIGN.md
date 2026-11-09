@@ -75,10 +75,12 @@ successful unlock returns to Review and Try again, without re-entering the email
   for the credential screen instead of asserting it synchronously; eight vault interaction checks added.
 
 **Status of revision 5.** Designed with Fable 5.1 and verified in the authoring environment:
-Chromium passed the gallery/layout walk for every state at 1280 and 375px in light and dark, and 37
-interaction checks including the eight vault checks; the 320px walk reports one horizontal overflow on
-`google-mismatch` that is present unchanged on the base commit and is not part of this change. The
-real backend passed an isolated private-bus GNOME Keyring journey (create, lock, refused overwrite,
+Chromium passed the gallery/layout walk for every state at 1280, 375 and 320px in light and dark, and 37
+interaction checks including the eight vault checks. Independent review of this revision found the
+`google-mismatch` panel overflowing a 320px viewport: the panel's grid items kept their default
+`min-width: auto`, so an unbreakable address in the head text widened the whole column. Panel children
+now have `min-width: 0` and the panel title and text wrap anywhere, which is the same treatment the
+identity card and summary already use. The real backend passed an isolated private-bus GNOME Keyring journey (create, lock, refused overwrite,
 wrong password, unlock, restart, unlock). No real account, provider or operator keyring was used.
 
 ## Revision 4 (2026-09-08): honest completion, Google recovery, vault language
