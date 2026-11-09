@@ -4,6 +4,7 @@ This module must never replace absent credentials or lower tools with invented
 Himalaya responses or Mirador events.
 """
 
+import getpass
 import json
 import os
 from pathlib import Path
@@ -11,9 +12,11 @@ import selectors
 import signal
 import shutil
 import subprocess
+import sys
 import time
 import unittest
 import uuid
+import warnings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,11 +24,37 @@ EXECUTABLE = ROOT / "pimcamp"
 EXTERNAL_BOUND_SECONDS = 120
 
 
+def _prompt_for_client_credential() -> str:
+    # Drop the former secret environment variable before any child environment
+    # is copied, including when an older runner still supplies it.
+    os.environ.pop("PIMCAMP_LIVE_CREDENTIAL", None)
+    if not sys.stdin.isatty():
+        raise unittest.SkipTest(
+            "real journey needs an interactive terminal for hidden credential input"
+        )
+
+    try:
+        with warnings.catch_warnings():
+            # getpass otherwise falls back to echoing input when hidden input is
+            # unavailable. Treat that fallback as a skip before reading input.
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            credential = getpass.getpass("Pimcamp live-test client credential: ")
+    except getpass.GetPassWarning:
+        raise unittest.SkipTest(
+            "terminal cannot accept the client credential without echo"
+        ) from None
+
+    if not credential:
+        raise unittest.SkipTest("no client credential was entered")
+    return credential
+
+
 class RealAdapterJourney(unittest.TestCase):
     def test_real_single_account_journey(self) -> None:
+        # Do not let a legacy secret variable reach version probes or child tools.
+        os.environ.pop("PIMCAMP_LIVE_CREDENTIAL", None)
         required = {
             "PIMCAMP_LIVE_CONFIG": os.environ.get("PIMCAMP_LIVE_CONFIG"),
-            "PIMCAMP_LIVE_CREDENTIAL": os.environ.get("PIMCAMP_LIVE_CREDENTIAL"),
             "PIMCAMP_LIVE_RECIPIENT": os.environ.get("PIMCAMP_LIVE_RECIPIENT"),
             "PIMCAMP_LIVE_HIMALAYA_VERSION": os.environ.get(
                 "PIMCAMP_LIVE_HIMALAYA_VERSION"
@@ -69,7 +98,7 @@ class RealAdapterJourney(unittest.TestCase):
         self.assertGreater(wait_bound, 0)
         self.teardown_timeout = float(wait_bound) + 5
 
-        self.credential = str(required["PIMCAMP_LIVE_CREDENTIAL"])
+        self.credential = _prompt_for_client_credential()
         self.recipient = str(required["PIMCAMP_LIVE_RECIPIENT"])
         self.environment = os.environ.copy()
         self.environment["PIMCAMP_CONFIG"] = str(config_path)
@@ -78,8 +107,16 @@ class RealAdapterJourney(unittest.TestCase):
 
         try:
             started = self._read_line(subscription, deadline)
-            self.assertEqual("pimcamp.v1", started.get("contract_version"))
-            self.assertEqual({"status": "started"}, started.get("result"))
+            self.assertEqual(
+                "pimcamp.v1",
+                started.get("contract_version"),
+                "real subscription returned an invalid contract (content suppressed)",
+            )
+            self.assertEqual(
+                {"status": "started"},
+                started.get("result"),
+                "real subscription did not start (content suppressed)",
+            )
 
             token = f"pimcamp-live-{uuid.uuid4()}"
             composed = self._success(
@@ -102,15 +139,16 @@ class RealAdapterJourney(unittest.TestCase):
                     deadline,
                 )
             )
-            self.assertEqual("sent", sent.get("status"))
+            self.assertEqual("sent", sent.get("status"), "unique-token send failed")
 
             event = self._read_line(subscription, deadline)
             self.assertEqual(
                 {"contract_version", "kind", "mailbox", "observed_at"},
                 set(event),
+                "real event had an invalid shape (content suppressed)",
             )
-            self.assertEqual("new_mail", event["kind"])
-            self.assertEqual("inbox", event["mailbox"])
+            self.assertEqual("new_mail", event["kind"], "unexpected event kind")
+            self.assertEqual("inbox", event["mailbox"], "unexpected event mailbox")
 
             incoming = self._find_message(token, deadline)
             message = self._success(
@@ -142,7 +180,7 @@ class RealAdapterJourney(unittest.TestCase):
                     deadline,
                 )
             )
-            self.assertEqual("sent", reply_sent.get("status"))
+            self.assertEqual("sent", reply_sent.get("status"), "reply send failed")
 
             filed = self._success(
                 self._invoke(
@@ -154,8 +192,12 @@ class RealAdapterJourney(unittest.TestCase):
                     deadline,
                 )
             )
-            self.assertEqual("filed", filed.get("status"))
-            self.assertIn(filed.get("mechanism"), {"report_spam", "move_to_junk"})
+            self.assertEqual("filed", filed.get("status"), "matching message was not filed")
+            self.assertIn(
+                filed.get("mechanism"),
+                {"report_spam", "move_to_junk"},
+                "matching message used an unsupported junk mechanism",
+            )
 
             remaining = self._all_summaries(deadline)
             self.assertFalse(any(token in item["subject"] for item in remaining))
@@ -168,15 +210,26 @@ class RealAdapterJourney(unittest.TestCase):
                 )
             except subprocess.TimeoutExpired:
                 subscription.kill()
-                stdout, stderr = subscription.communicate(timeout=5)
-                self.fail("real subscription did not honor bounded Pimcamp teardown")
+                try:
+                    subscription.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise AssertionError(
+                    "real subscription did not honor bounded Pimcamp teardown "
+                    "(output suppressed)"
+                ) from None
             for line in stdout.splitlines():
                 event = json.loads(line)
                 self.assertEqual(
                     {"contract_version", "kind", "mailbox", "observed_at"},
                     set(event),
+                    "real event had an invalid shape (content suppressed)",
                 )
-            self.assertEqual(0, subscription.returncode, stderr)
+            self.assertEqual(
+                0,
+                subscription.returncode,
+                "real subscription failed (output suppressed)",
+            )
 
     def _prove_tool_version(
         self, executable: str, expected: str, label: str
@@ -205,7 +258,7 @@ class RealAdapterJourney(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=self.environment,
+            env=self._child_environment(),
         )
         assert process.stdin is not None
         process.stdin.write(
@@ -226,25 +279,36 @@ class RealAdapterJourney(unittest.TestCase):
     ) -> dict[str, object]:
         remaining = deadline - time.monotonic()
         self.assertGreater(remaining, 0, "real journey exceeded its external bound")
-        completed = subprocess.run(
-            [str(EXECUTABLE), operation],
-            input=json.dumps(
-                {
-                    "contract_version": "pimcamp.v1",
-                    "client_credential": self.credential,
-                    "input": input_value,
-                }
-            ),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self.environment,
-            timeout=remaining,
-            check=False,
+        try:
+            completed = subprocess.run(
+                [str(EXECUTABLE), operation],
+                input=json.dumps(
+                    {
+                        "contract_version": "pimcamp.v1",
+                        "client_credential": self.credential,
+                        "input": input_value,
+                    }
+                ),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self._child_environment(),
+                timeout=remaining,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise AssertionError(
+                "Pimcamp request timed out (output suppressed)"
+            ) from None
+        self.assertEqual(
+            1,
+            len(completed.stdout.splitlines()),
+            "Pimcamp emitted an unexpected response count (output suppressed)",
         )
-        self.assertEqual(1, len(completed.stdout.splitlines()), completed.stderr)
         value = json.loads(completed.stdout)
-        self.assertEqual(0, completed.returncode, value)
+        self.assertEqual(
+            0, completed.returncode, "Pimcamp request failed (output suppressed)"
+        )
         return value
 
     def _read_line(
@@ -292,10 +356,21 @@ class RealAdapterJourney(unittest.TestCase):
                 return summaries
 
     def _success(self, envelope: dict[str, object]) -> dict[str, object]:
-        self.assertEqual("pimcamp.v1", envelope.get("contract_version"))
+        self.assertEqual(
+            "pimcamp.v1",
+            envelope.get("contract_version"),
+            "Pimcamp returned an invalid contract (content suppressed)",
+        )
         result = envelope.get("result")
-        self.assertIsInstance(result, dict)
+        self.assertIsInstance(
+            result, dict, "Pimcamp returned an invalid result (content suppressed)"
+        )
         return result
+
+    def _child_environment(self) -> dict[str, str]:
+        environment = self.environment.copy()
+        environment.pop("PIMCAMP_LIVE_CREDENTIAL", None)
+        return environment
 
 
 if __name__ == "__main__":

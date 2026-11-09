@@ -274,12 +274,20 @@ Run the credentialed journey separately:
 python3 -m unittest tests.test_live_adapters -v
 ```
 
-The live journey mutates the dedicated test account. A private runner must set
-`PIMCAMP_LIVE_ENABLE=1`, `PIMCAMP_LIVE_CONFIG`,
-`PIMCAMP_LIVE_CREDENTIAL`, `PIMCAMP_LIVE_RECIPIENT`,
-`PIMCAMP_LIVE_HIMALAYA_VERSION`, and `PIMCAMP_LIVE_MIRADOR_VERSION`. The
-recipient must automatically reply with the unique token. Do not put the
-credential value in shell history.
+The live journey mutates the configured test account. A private runner must set
+the non-secret controls `PIMCAMP_LIVE_ENABLE=1`, `PIMCAMP_LIVE_CONFIG`,
+`PIMCAMP_LIVE_RECIPIENT`, `PIMCAMP_LIVE_HIMALAYA_VERSION`, and
+`PIMCAMP_LIVE_MIRADOR_VERSION`. Run it in an interactive terminal: the test
+requests the Pimcamp client credential with hidden input after checking the
+configuration and tool versions. Do not set `PIMCAMP_LIVE_CREDENTIAL`; the test
+removes that obsolete variable before starting child processes. It passes the
+credential only in the public request on Pimcamp's stdin, never in argv,
+environment, or test failure output. If hidden terminal input is unavailable,
+the live test skips without reading a credential.
+
+The recipient must automatically reply with the generated unique token. The
+test proceeds only after it finds and reads that matching reply, then sends a
+reply and files the matching message as junk before confirming it is gone.
 
 An explicit local skip is honest but is not release evidence. Release evidence
 requires the real journey to pass, real redacted captures, exact tool versions,
