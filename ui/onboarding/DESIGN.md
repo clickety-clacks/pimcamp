@@ -22,6 +22,65 @@ Deep links for review: `index.html#demo=<state>&theme=<system|light|dark>&latenc
 The `<state>` keys are the values in the “Jump to a state” list under Demo controls, for example
 `#demo=google-mismatch&theme=dark&latency=0`.
 
+## Revision 5 (2026-11-09): the encrypted password vault step
+
+One behaviour is added: the vault prerequisite is explained and handled before any email credential
+is requested. Tokens, screen order for the other screens, and the service boundary are unchanged.
+
+**Why a screen, not a notice.** The spec requires the prerequisite to be explained before the IMAP or
+Google screen, to distinguish *creating* a vault from *unlocking* one, and never to report success from
+a helper exit code. A notice on the credential screen would arrive after the password field, and the
+connect-screen vault failure arrives after the password has been typed. So Account details now continues
+to a **storage** screen whenever the vault has not been seen ready in this session, and the credential
+screen only appears once the vault is ready. Users on a ready host never see the step: the status call
+answers “ready” and the loading state is replaced by the credential screen.
+
+**States.** `storageStatus()` returns `{ state: 'missing'|'locked'|'ready'|'unavailable', manageable }`.
+The screen renders one of four modes: *create* (missing and manageable: choose and confirm a new
+password), *unlock* (locked and manageable: enter the existing password), *unmanaged* (missing or locked
+but the page cannot reach the vault service: explain, ask the installation owner, “Check again”) and
+*unavailable* (service not answering: nothing changed, “Check again”). Only the applicable password
+fields exist in the DOM; the other group is removed, not hidden, so a hidden `required` input can never
+block submit or confuse assistive technology.
+
+**Copy.** The explanation is the spec's own text from the agent-assisted guide: the vault is encrypted
+storage on the mail host, Linux calls it a keyring, its password is not an email-provider password,
+save it in a password manager, it may be needed after a restart, losing it may make stored credentials
+inaccessible, and programs running as the same OS user may read credentials while it is unlocked.
+Create and unlock use different ledes and submit labels (“Create vault and continue” / “Unlock and
+continue”) so the two can never be confused. A rejected password is a field error on the password field
+that says the vault was not changed; a create attempt over an existing vault or an unlock of a missing
+one re-reads the status and re-renders the correct mode with a screen-level notice.
+
+**Form state.** The vault password lives only in the form fields between submit and the answer; it is
+never written to `state`, the draft, or browser storage, and the fields are cleared on success. Back
+from the storage screen returns to Account details with the draft intact. The connect screen's vault
+failure gained a **Check the vault** action that opens the storage screen with `returnTo: 'review'`, so a
+successful unlock returns to Review and Try again, without re-entering the email password.
+
+- Templates: `tpl-storage` (slots `title`, `lede`, `demo-notice`, `notice`, `vault-host`, `create`,
+  `unlock`, `wait`, `wait-text`, `actions`; fields `f-vault-new`, `f-vault-confirm`, `f-vault-pass`).
+  `tpl-vault-help` is reworded to describe the screen.
+- State: `state.storage = { ready, status, returnTo, submitting }`; `STEP_OF.storage = 2` (the step rail
+  shows the vault inside the credentials step, not as a new step). `startAdd`/`startReconnect` reset it.
+- Service boundary: `storageStatus()` and `unlockStorage({ vaultPassword, create })`, see Integration
+  seams. Error codes: `vault_password_required`, `vault_password_rejected`, `vault_exists`,
+  `vault_missing`, `vault_unmanaged`, `storage_unavailable`.
+- Demo: `demo.storage` (ready / missing / locked / unavailable / unmanaged) and a matching control in the
+  side sheet; in the simulated unlock the password `wrong` is rejected. Every gallery scenario other than
+  the vault ones starts from a ready vault.
+- Gallery: `storage-create`, `storage-unlock`, `storage-unlock-rejected`, `storage-unavailable`,
+  `storage-unmanaged`.
+- Browser review: Details now continues asynchronously (the status call runs first), so journeys wait
+  for the credential screen instead of asserting it synchronously; eight vault interaction checks added.
+
+**Status of revision 5.** Designed with Fable 5.1 and verified in the authoring environment:
+Chromium passed the gallery/layout walk for every state at 1280 and 375px in light and dark, and 37
+interaction checks including the eight vault checks; the 320px walk reports one horizontal overflow on
+`google-mismatch` that is present unchanged on the base commit and is not part of this change. The
+real backend passed an isolated private-bus GNOME Keyring journey (create, lock, refused overwrite,
+wrong password, unlock, restart, unlock). No real account, provider or operator keyring was used.
+
 ## Revision 4 (2026-09-08): honest completion, Google recovery, vault language
 
 Cleanup after real onboarding failures. Same tokens, screen order and service boundary; four behaviours
@@ -262,6 +321,7 @@ screen order and every JavaScript contract, and changes the composition:
 | 1 | Accounts / welcome | `accounts` | loading, empty (“Connect your email”), list with Connected / Needs reconnect, per-row Checking…, per-row “Details” disclosure (servers, host, sign-in check result, notifications “Not tested”) |
 | 2 | Choose connection | `choose` | Google / Gmail, IMAP & SMTP; previous choice marked with `aria-current` |
 | 3 | Account details | `details` | valid, field errors (format, duplicate address, name length) |
+| 3a | Encrypted password vault | `storage` | checking, create (choose + confirm, mismatch and empty errors), unlock (rejected password, kept vault), create over an existing vault / unlock of a missing one (re-read, notice), unmanaged (ask the installation owner, Check again), unavailable (nothing changed, Check again), busy while the service answers |
 | 4 | IMAP & SMTP | `imap` | defaults (993/TLS, 465/TLS), STARTTLS port follow, editable presets, shared vs separate outgoing login, password reveal, field errors |
 | 5 | Google | `google` | ready, consent in progress (cancellable, says what to do if the popup stops at an error), cancelled (by user / at Google), could not finish, expired, access denied (neutral: Testing test-user or organization policy), OAuth client missing (explains the one-time registration; primary “Set up Google sign-in” or “Continue setting up…”), authorized matching account, authorized different account (explicit choice); “Trouble with Google sign-in?” help in every state |
 | 5a | Google sign-in setup | `google-setup` | intro, part 1 project, part 2 app and client, part 3 client file (storage not ready, file rejected, saving, save failed, unconfirmed), saved (incl. already configured, refresh failed), status check failed |
@@ -386,6 +446,8 @@ data and receives an `AbortSignal` where cancellation is meaningful.
 | --- | --- | --- |
 | `listAccounts()` | Existing accounts for the hub | `[{ id, address, name, method, status: 'connected'|'needs-reconnect'|'unknown', note, incoming?, outgoing?, observation? }]` (no secrets). `observation` is optional and only `{ state: 'verified', message }` changes the “Not tested” pill; the UI never infers readiness. |
 | `beginSetup(accountId?)` | Start a setup, learn installation facts | `{ setupId, installation: { host, remote, oauthClientConfigured } }` |
+| `storageStatus()` | Observe the encrypted vault before any credential is requested | `{ state: 'missing'|'locked'|'ready'|'unavailable', manageable: boolean }`. Only an observed `ready` lets the credential screens open; `manageable` says whether the backend can reach the keyring daemon's control socket. |
+| `unlockStorage({ vaultPassword, create })` | Create the vault with a new password, or unlock the existing one | the new status on success. Throws `publicMessage` + `code`: `vault_password_required`, `vault_password_rejected` (shown on the password field), `vault_exists`, `vault_missing` (status re-read, mode re-rendered), `vault_unmanaged`, `storage_unavailable`. Never resets an existing vault. |
 | `validateFields(step, draft, ctx)` | Field validation (`details`, `imap`) | `{ [fieldId]: message }` |
 | `beginOAuth({ email }, signal)` | Start consent; resolves when the callback lands or the flow ends | `{ status: 'authorized'|'cancelled'|'expired'|'denied-policy', identity?, byUser? }` |
 | `checkIncoming(draft, signal)` / `checkOutgoing(draft, signal)` | Authenticate only; never fetch or send | `{ ok, code?: 'auth'|'unreachable'|'storage'|'expired', message }`. A thrown error with `publicMessage` (and optionally `code`) is shown the same way; `storage`/`expired` are also recognised from the message text. |
@@ -462,6 +524,8 @@ The side sheet (top-right button) drives the demo service:
   picker in the preview, use an `installed` object containing a Google-shaped `client_id` and a
   nonempty `client_secret` (at most 4096 characters, no NUL). A file with a `web` block is rejected.
   No sample client file ships.
+- Simulated vault state (ready / missing / locked / not responding / locked and out of reach); in the
+  simulated unlock the password `wrong` is rejected.
 - Simulated latency per operation.
 - A “Jump to a state” list that sets up any screen with sample values, for screenshots and review.
 
@@ -500,6 +564,9 @@ Suggested set: `accounts-empty`, `accounts-list`, `accounts-details`, `choose`, 
 `google-setup-storage-missing`, `google-setup-save-failed`, `google-setup-saved`, `review-imap`,
 `connect-incoming-failed`, `connect-storage-failed`, `done`, `done-remote`, each at 1280 and 375px,
 light and dark.
+
+Gallery states added in revision 5: `storage-create`, `storage-unlock`, `storage-unlock-rejected`,
+`storage-unavailable`, `storage-unmanaged`, each pre-answered so the gallery walk needs no service call.
 
 Gallery states added in revision 3 (all existing names are unchanged): `google-setup-intro`,
 `google-setup-storage-missing`, `google-setup-unavailable`, `google-setup-project`,
@@ -542,3 +609,6 @@ Google console and real mailbox consent remain unverified.
   rewords those pages, the `help` disclosure in `tpl-google` is the only place to update.
 - The accounts hub shows the host only after a setup has reported it (`state.installation.host`);
   before that the “Saved on” row is omitted rather than guessed.
+- The vault step unlocks or creates the host's login keyring through the running daemon's control
+  socket; it cannot help when no keyring daemon runs for that user, and it does not configure unattended
+  unlock after a host reboot. Those remain installation-owner tasks, and the screen says so.

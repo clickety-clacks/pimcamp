@@ -335,3 +335,24 @@ class SetupServiceTests(unittest.TestCase):
         self.assertEqual(self.service.list_accounts(), [])
         self.assertTrue(self.service.commit(self.setup_id, self.draft)["ok"])
         self.assertEqual(len(self.credentials.keys), 3)
+
+    def test_storage_without_a_managed_vault_is_ready_and_cannot_be_unlocked_here(self):
+        self.assertEqual(self.service.storage_status(), {"state": "ready", "manageable": False})
+        with self.assertRaises(SetupError) as refused:
+            self.service.unlock_storage("fixture-vault-password", False)
+        self.assertEqual(refused.exception.code, "vault_unmanaged")
+
+    def test_storage_backend_answers_are_delegated_with_validated_inputs(self):
+        calls = []
+        self.credentials.storage_status = lambda: {"state": "locked", "manageable": True}
+        def unlock(password, create):
+            calls.append((password, create))
+            return {"state": "ready", "manageable": True}
+        self.credentials.unlock_storage = unlock
+        self.assertEqual(self.service.storage_status(), {"state": "locked", "manageable": True})
+        for password, create in ((None, False), ("fixture", "yes"), (5, True)):
+            with self.assertRaises(SetupError) as refused:
+                self.service.unlock_storage(password, create)
+            self.assertEqual(refused.exception.code, "vault_password_required")
+        self.assertEqual(self.service.unlock_storage("fixture-vault-password", True), {"state": "ready", "manageable": True})
+        self.assertEqual(calls, [("fixture-vault-password", True)])

@@ -101,6 +101,8 @@ try {
       set('f-email', 'browser-test@custom.example');
       set('f-name', 'Browser test · work@custom.example');
       document.querySelector('main form').requestSubmit();
+      // The vault check runs against the server before the credential screen.
+      await waitFor(() => document.getElementById('f-in-host'));
       set('f-in-host', 'incoming.custom.example');
       set('f-out-host', 'outgoing.custom.example');
       set('f-in-pass', 'fixture-browser-password');
@@ -211,7 +213,7 @@ try {
     set('f-email', 'alex@custom.example');
     set('f-name', 'alex.work@custom.example');
     submit();
-    if (state.screen !== 'imap') throw Error('Details did not continue');
+    await waitFor(() => state.screen === 'imap');
     set('f-in-host', 'incoming.custom.example');
     set('f-out-host', 'outgoing.custom.example');
     set('f-in-pass', 'fixture-only-password');
@@ -296,6 +298,9 @@ try {
     await call('Input.insertText', {text});
   }
   await key('Enter', 'Enter', 13);
+  for (let count = 0; count < 100 && await evaluate('window.PimcampOnboardingPreview.state.screen') !== 'imap'; count++) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
   assert.equal(await evaluate('window.PimcampOnboardingPreview.state.screen'), 'imap');
   for (const [id, text] of [['f-in-host', 'incoming.custom.example'],
                            ['f-out-host', 'outgoing.custom.example'], ['f-in-pass', 'fixture-keyboard-password']]) {
@@ -431,6 +436,87 @@ try {
             structuredVaultError:true, expiredGoogleRecovery:true, unknownSaveRecovery:true};
   })()`);
   Object.assign(journey, recovery);
+  const vault = await evaluate(`(async () => {
+    const {state, demo, gallery, service} = window.PimcampOnboardingPreview;
+    const waitFor = async predicate => {
+      const deadline = Date.now() + 5000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw Error('Vault check timed out');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    };
+    const set = (id, value) => {
+      const input = document.getElementById(id);
+      input.value = value;
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+    };
+    const text = () => document.querySelector('main').textContent;
+    const submit = () => document.querySelector('main form').requestSubmit();
+    const buttons = () => Array.from(document.querySelectorAll('main button')).map(button => button.textContent.trim());
+    demo.latency = 0;
+    gallery('storage-create');
+    if (state.screen !== 'storage' || !document.getElementById('f-vault-new') || !document.getElementById('f-vault-confirm')) throw Error('Create screen lacks choose and confirm fields');
+    if (document.getElementById('f-vault-pass')) throw Error('Create screen also asks for an existing password');
+    for (const phrase of ['password manager', 'restart', 'os user', 'keyring', 'email password', 'inaccessible']) {
+      if (!text().toLowerCase().includes(phrase)) throw Error('Vault explanation lacks: ' + phrase);
+    }
+    if (document.getElementById('f-in-pass') || document.getElementById('f-email')) throw Error('Email credentials requested on the vault screen');
+    submit();
+    if (!document.querySelector('#f-vault-new[aria-invalid="true"]')) throw Error('Empty vault password accepted');
+    set('f-vault-new', 'fixture-vault-password'); set('f-vault-confirm', 'fixture-vault-other');
+    submit();
+    if (!document.querySelector('#f-vault-confirm[aria-invalid="true"]')) throw Error('Mismatched confirmation accepted');
+    if (state.storage.submitting) throw Error('Mismatch still sent a request');
+    set('f-vault-confirm', 'fixture-vault-password');
+    submit();
+    await waitFor(() => state.screen === 'imap');
+    if (demo.storage !== 'ready' || !state.storage.ready) throw Error('Successful create did not mark the vault ready');
+    gallery('storage-unlock');
+    if (!document.getElementById('f-vault-pass') || document.getElementById('f-vault-new')) throw Error('Unlock screen offers a new password');
+    if (!text().includes('existing')) throw Error('Unlock screen does not say the vault exists');
+    set('f-vault-pass', 'wrong');
+    submit();
+    await waitFor(() => !state.storage.submitting);
+    if (!document.querySelector('#f-vault-pass[aria-invalid="true"]')) throw Error('Rejected password not shown on the field');
+    if (!text().includes('not changed')) throw Error('Rejection does not reassure that the vault was kept');
+    if (state.screen !== 'storage' || demo.storage !== 'locked') throw Error('Rejection reset or left the screen');
+    set('f-vault-pass', 'fixture-vault-password');
+    submit();
+    await waitFor(() => state.screen === 'imap');
+    if (demo.storage !== 'ready') throw Error('Unlock did not become ready');
+    gallery('storage-unlock-rejected');
+    if (!document.querySelector('#f-vault-pass[aria-invalid="true"]')) throw Error('Rejected gallery state has no field error');
+    for (const key of ['storage-unmanaged', 'storage-unavailable']) {
+      gallery(key);
+      if (document.querySelector('main input[type="password"]')) throw Error(key + ' asks for a password it cannot use');
+      if (!buttons().includes('Check again') || !buttons().includes('Back')) throw Error(key + ' lacks Check again and Back');
+      if (!text().includes('kept')) throw Error(key + ' does not say entered details are kept');
+    }
+    gallery('details');
+    demo.storage = 'missing';
+    state.storage.ready = false;
+    set('f-email', 'vault@custom.example'); set('f-name', 'Vault order');
+    submit();
+    await waitFor(() => state.screen === 'storage' && document.querySelector('[data-screen="storage"]'));
+    if (!document.getElementById('f-vault-new')) throw Error('Missing vault did not route to create before credentials');
+    if (state.draft.email !== 'vault@custom.example') throw Error('Vault step lost the entered details');
+    Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === 'Back').click();
+    if (state.screen !== 'details' || document.getElementById('f-email').value !== 'vault@custom.example') throw Error('Back from the vault step lost the form');
+    gallery('connect-storage-failed');
+    const check = Array.from(document.querySelectorAll('main button')).find(button => button.textContent.trim() === 'Check the vault');
+    if (!check) throw Error('Connect storage failure offers no vault check');
+    demo.storage = 'locked';
+    check.click();
+    await waitFor(() => state.screen === 'storage' && document.getElementById('f-vault-pass'));
+    set('f-vault-pass', 'fixture-vault-password');
+    submit();
+    await waitFor(() => state.screen === 'review');
+    if (!document.querySelector('[data-action="connect"]')) throw Error('Unlock from connect did not return to review');
+    demo.storage = 'ready';
+    return {vaultCreateChooseAndConfirm:true, vaultExplanationBeforeCredentials:true, vaultUnlockRejectionKeepsVault:true,
+            vaultUnmanagedNoPasswordPrompt:true, vaultBeforeCredentialsOrder:true, vaultBackKeepsForm:true, vaultRepairFromConnect:true};
+  })()`);
+  Object.assign(journey, vault);
   await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2));
   await writeFile(join(output, 'interaction-results.json'), JSON.stringify(journey, null, 2));
   await writeFile(join(output, 'layout-failures.json'), JSON.stringify(layoutFailures, null, 2));

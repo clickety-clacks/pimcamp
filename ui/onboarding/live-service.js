@@ -59,6 +59,8 @@
     googleApplicationStatus: () => call('googleApplicationStatus'),
     configureGoogleApplication: ({credentialsJson}) => call('configureGoogleApplication', {credentialsJson}),
     beginSetup: beginSession,
+    storageStatus: () => call('storageStatus'),
+    unlockStorage: ({vaultPassword, create}) => call('unlockStorage', {vaultPassword, create: !!create}),
     checkIncoming: (draft, signal) => accountStep('checkIncoming', draft, signal),
     checkOutgoing: (draft, signal) => accountStep('checkOutgoing', draft, signal),
     async commitAccount(draft, signal) {

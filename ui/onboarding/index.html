@@ -100,6 +100,11 @@
           <option value="choose">Choose connection</option>
           <option value="details">Account details</option>
           <option value="details-errors">Account details · errors</option>
+          <option value="storage-create">Password vault · create a new vault</option>
+          <option value="storage-unlock">Password vault · unlock the existing vault</option>
+          <option value="storage-unlock-rejected">Password vault · password not accepted</option>
+          <option value="storage-unavailable">Password vault · service not responding</option>
+          <option value="storage-unmanaged">Password vault · locked, out of this page’s reach</option>
           <option value="imap">IMAP &amp; SMTP</option>
           <option value="imap-errors">IMAP &amp; SMTP · errors</option>
           <option value="imap-separate">IMAP &amp; SMTP · separate outgoing login</option>
@@ -163,6 +168,14 @@
       <label class="check"><input type="checkbox" data-demo="installation.remote"><span>Remote installation (show host on review)</span></label>
       <label class="check"><input type="checkbox" data-demo="oauthClientConfigured"><span>Google OAuth client is configured</span></label>
       <label class="check"><input type="checkbox" data-demo="googleHelperAvailable"><span>Google sign-in helper is installed</span></label>
+      <label class="field__label" for="demo-storage">Encrypted password vault on the host</label>
+      <select id="demo-storage" data-demo="storage">
+        <option value="ready">Unlocked and working</option>
+        <option value="missing">Not created yet</option>
+        <option value="locked">Exists but locked (“wrong” is rejected)</option>
+        <option value="unavailable">Vault service not responding</option>
+        <option value="unmanaged">Locked, and this page can’t reach the vault service</option>
+      </select>
       <label class="field__label" for="demo-google-setup">Saving the Google registration returns</label>
       <select id="demo-google-setup" data-demo="googleSetupOutcome">
         <option value="saved">Saved (client ID returned)</option>
@@ -314,6 +327,51 @@
         <button type="button" class="btn btn--ghost" data-action="back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back</button>
         <button type="submit" class="btn btn--primary">Continue</button>
       </div>
+    </form>
+  </template>
+
+  <!-- Encrypted password vault prerequisite. Shown after Account details and before any email password or Google sign-in is requested. -->
+  <template id="tpl-storage">
+    <form class="screen" data-screen="storage" novalidate>
+      <h1 class="screen__title" tabindex="-1" data-slot="title">Encrypted password vault</h1>
+      <p class="screen__lede" data-slot="lede"></p>
+      <p class="notice notice--demo" data-slot="demo-notice" hidden><span class="tag tag--demo">Demo</span><span>This vault check is simulated. Nothing is created, unlocked or saved.</span></p>
+      <div class="notice notice--danger" data-slot="notice" role="status" hidden></div>
+      <p>Pimcamp needs a safe place on <span data-slot="vault-host">the mail host</span> to keep your email passwords and sign-in tokens. Linux calls this encrypted password vault a “keyring.” It lets Pimcamp access your account without asking for the email password every time. The vault password unlocks that storage; it is not a password requested by your email provider. While unlocked, programs running as your OS user may be able to access its stored credentials.</p>
+      <div class="group" data-slot="create" hidden>
+        <p>Choose a new, strong vault password and confirm it. It does not need to match your email or computer login password. Save it in your password manager with the mail host’s name. You may need it after a restart; without it, stored credentials may be inaccessible and the email account may need reconnecting.</p>
+        <div class="field">
+          <label class="field__label" for="f-vault-new">New vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-new" name="f-vault-new" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-new" aria-pressed="false" aria-label="Show new vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-new-error" hidden></p>
+        </div>
+        <div class="field">
+          <label class="field__label" for="f-vault-confirm">Confirm vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-confirm" name="f-vault-confirm" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-confirm" aria-pressed="false" aria-label="Show confirm vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-confirm-error" hidden></p>
+        </div>
+      </div>
+      <div class="group" data-slot="unlock" hidden>
+        <p>Enter the existing vault password you chose earlier. This unlocks the same vault; it does not create a new one or change your email password.</p>
+        <div class="field">
+          <label class="field__label" for="f-vault-pass">Vault password</label>
+          <div class="field__row field__row--password">
+            <input id="f-vault-pass" name="f-vault-pass" type="password" autocomplete="current-password" autocapitalize="off" spellcheck="false" required>
+            <button type="button" class="btn btn--ghost btn--icon" data-action="toggle-password" data-target="f-vault-pass" aria-pressed="false" aria-label="Show vault password"><svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg></button>
+          </div>
+          <p class="field__error" id="f-vault-pass-error" hidden></p>
+        </div>
+      </div>
+      <div class="group" data-slot="wait" hidden>
+        <p data-slot="wait-text"></p>
+      </div>
+      <div class="actions" data-slot="actions"></div>
     </form>
   </template>
 
@@ -664,11 +722,11 @@
       <div class="disclosure__body">
         <p>Pimcamp keeps this account’s password or Google permission in an encrypted vault on <span data-slot="vault-host">the mail host</span>. The vault has a password of its own. It is separate from your email password, and your email provider never sees it.</p>
         <ul class="disclosure__list">
-          <li><strong>Host without a vault yet:</strong> whoever sets up the host chooses a new vault password once and keeps it in a password manager. This is the only time a new vault password is created.</li>
+          <li><strong>Host without a vault yet:</strong> you choose a new vault password once, on this page’s vault step, and keep it in a password manager. This is the only time a new vault password is created.</li>
           <li><strong>Vault already there:</strong> it is unlocked with its existing password. A new vault is never created to replace one that already exists.</li>
-          <li><strong>Never in chat:</strong> the vault password is typed only into the host’s own unlock prompt. Nobody should ask you to send it in a chat, an email, or on this page, and this page never asks for it.</li>
+          <li><strong>Never in chat:</strong> the vault password is typed only into this page’s vault step or the host’s own unlock prompt. Nobody should ask you to send it in a chat or an email.</li>
         </ul>
-        <p>This page can’t create or unlock the vault. If it is locked or missing, the agent or operator repairs it on the host with the installation’s existing storage provider. What you have entered here stays as it is while that happens.</p>
+        <p>If the vault turns out to be locked or missing, this page takes you back to its vault step to unlock or create it. When this page can’t reach the vault service itself, the installation owner repairs it on the host with the installation’s existing storage provider. What you have entered here stays as it is while that happens.</p>
       </div>
     </details>
   </template>

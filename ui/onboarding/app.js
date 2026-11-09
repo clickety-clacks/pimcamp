@@ -81,6 +81,7 @@
     googleHelperAvailable: true,
     googleSetupOutcome: 'saved',
     googleOutcome: 'authorized',
+    storage: 'ready', // ready | missing | locked | unavailable | unmanaged
     outcomes: { incoming: 'pass', outgoing: 'pass', save: 'pass' },
   });
   const demo = DEMO_DEFAULTS();
@@ -229,6 +230,28 @@
         };
       },
 
+      /** { state: 'ready'|'missing'|'locked'|'unavailable', manageable }. Mirrors the installation's observed vault state. */
+      async storageStatus() {
+        await delay(lat(0.3));
+        const s = settings.storage || 'ready';
+        if (s === 'unmanaged') return { state: 'locked', manageable: false };
+        return { state: s, manageable: true };
+      },
+
+      /** Creates or unlocks the simulated vault. Same codes and refusals as the real backend; the password is never kept. */
+      async unlockStorage({ vaultPassword, create }) {
+        await delay(lat(1.2));
+        const s = settings.storage || 'ready';
+        if (s === 'ready') return { state: 'ready', manageable: true };
+        if (s === 'unavailable') throw publicError('The mail host’s encrypted password vault is not responding, so nothing could be created or unlocked.', 'storage_unavailable');
+        if (create && s === 'locked') throw publicError('A vault already exists on the mail host. Unlock it with its existing password instead; it was not changed.', 'vault_exists');
+        if (!create && s === 'missing') throw publicError('The mail host has no vault yet. Create one with a new password instead.', 'vault_missing');
+        if (s === 'unmanaged') throw publicError('This page can’t reach the vault service on the mail host to create or unlock it. Ask the installation owner to unlock the vault there.', 'vault_unmanaged');
+        if (!create && vaultPassword === 'wrong') throw publicError('That password didn’t unlock the existing vault. Check your password manager for the vault password you chose earlier; the vault was not changed.', 'vault_password_rejected');
+        settings.storage = 'ready';
+        return { state: 'ready', manageable: true };
+      },
+
       validateFields(step, draft, ctx) { return validateStep(step, draft, ctx); },
 
       /** Resolves to { status: 'authorized'|'cancelled'|'expired'|'denied-policy', identity? } */
@@ -317,7 +340,7 @@
     { key: 'review', label: 'Review' },
     { key: 'connect', label: 'Connect' },
   ];
-  const STEP_OF = { choose: 0, details: 1, imap: 2, google: 2, 'google-setup': 2, review: 3, connect: 4, done: 5 };
+  const STEP_OF = { choose: 0, details: 1, storage: 2, imap: 2, google: 2, 'google-setup': 2, review: 3, connect: 4, done: 5 };
 
   /* Parts of the one-time Google registration. The intro and the saved summary sit outside the count. */
   const GSETUP_PARTS = [
@@ -371,12 +394,18 @@
     return d;
   }
 
+  /* The vault prerequisite is checked once per setup attempt. `ready` is remembered so Back and Continue
+   * do not re-check; `status` is a pre-answered state (gallery only); `returnTo` sends the user back to
+   * the screen that discovered a vault problem (the connect screen) instead of on to credentials. */
+  function newStorage() { return { ready: false, status: null, returnTo: null, submitting: false }; }
+
   const state = {
     screen: 'accounts',
     accounts: [],
     accountsLoaded: false,
     installation: { host: null, remote: false, oauthClientConfigured: true },
     draft: newDraft(),
+    storage: newStorage(),
     oauth: { status: 'idle', identity: null, controller: null },
     connect: newChecks(),
     googleSetup: newGoogleSetup(), // one-time registration of this installation with Google
@@ -398,6 +427,7 @@
     switch (state.screen) {
       case 'choose': return 'accounts';
       case 'details': return d.reconnectId ? 'accounts' : 'choose';
+      case 'storage': return state.storage.returnTo || (d.reconnectId ? 'accounts' : 'details');
       case 'imap': case 'google': return d.reconnectId ? 'accounts' : 'details';
       case 'google-setup': return 'google';
       case 'review': return d.method === 'google' ? 'google' : 'imap';
@@ -407,10 +437,15 @@
   }
   function back() { if (state.connect.running) return; go(backTarget()); }
 
+  /** The screen that asks for the email password or Google permission. The vault must be ready first. */
+  function credentialsScreen() { return state.draft.method === 'google' ? 'google' : 'imap'; }
+  function continueToCredentials() { go(state.storage.ready ? credentialsScreen() : 'storage'); }
+
   async function startAdd() {
     state.draft = newDraft();
     state.oauth = { status: 'idle', identity: null, controller: null };
     state.connect = newChecks();
+    state.storage = newStorage();
     renderLoading('Preparing setup…');
     const setup = await service.beginSetup().catch(error => { showServiceError(error); return null; });
     if (!setup) return;
@@ -426,11 +461,12 @@
     state.draft = d;
     state.oauth = { status: 'idle', identity: null, controller: null };
     state.connect = newChecks();
+    state.storage = newStorage();
     renderLoading(`Preparing to reconnect ${account.address}…`);
     const setup = await service.beginSetup(account.id).catch(error => { showServiceError(error); return null; });
     if (!setup) return;
     state.installation = setup.installation;
-    go(d.method === 'google' ? 'google' : 'imap');
+    continueToCredentials();
   }
 
   /* ---------------------------------------------------------------------
@@ -635,9 +671,159 @@
       if (applyErrors(n, errors)) return;
       if (d.google.identity && d.google.identity.toLowerCase() !== d.email.toLowerCase()) { d.google.identity = null; state.oauth.status = 'idle'; }
       if (!d.incoming.usernameEdited) d.incoming.username = d.email;
-      go(d.method === 'google' ? 'google' : 'imap');
+      continueToCredentials();
     });
     stage.append(n);
+  }
+
+  /* ---------- Encrypted password vault ---------- */
+  const VAULT_TIMEOUT = 45000;
+  const VAULT_TEXT = {
+    create: {
+      title: 'Create the password vault',
+      lede: host => `Before Pimcamp asks for your email password, it needs an encrypted place on ${host} to keep it. ${cap(host)} has no vault yet, so you create one now with a password of your own.`,
+      submit: 'Create vault and continue', busy: 'Creating the vault…',
+    },
+    unlock: {
+      title: 'Unlock the password vault',
+      lede: host => `Before Pimcamp asks for your email password, it needs the encrypted vault on ${host} where it will be kept. That vault exists but is locked.`,
+      submit: 'Unlock and continue', busy: 'Unlocking the vault…',
+    },
+    unmanaged: {
+      title: 'The password vault needs attention',
+      lede: (host, st) => st.state === 'missing'
+        ? `${cap(host)} has no encrypted password vault yet, and this page can’t reach the vault service there to create one. Ask the installation owner to create it on the host, then choose Check again. Everything you entered is kept.`
+        : `The encrypted password vault on ${host} is locked, and this page can’t reach the vault service there to unlock it. Ask the installation owner to unlock it on the host with its existing password, then choose Check again. Everything you entered is kept.`,
+    },
+    unavailable: {
+      title: 'The password vault isn’t responding',
+      lede: host => `The encrypted password vault service on ${host} is not answering, so Pimcamp can’t tell whether a vault exists. Nothing was changed. Ask the installation owner to check the vault service, then choose Check again. Everything you entered is kept.`,
+    },
+  };
+  function cap(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+  function vaultHost() { return state.installation.host ? `the mail host ${state.installation.host}` : 'the mail host'; }
+  function vaultMode(st) {
+    if (st.state === 'unavailable') return 'unavailable';
+    if (!st.manageable) return 'unmanaged';
+    return st.state === 'missing' ? 'create' : 'unlock';
+  }
+
+  /** Checks the vault before any credential is requested. Pre-answered states (gallery) render synchronously. */
+  function renderStorage() {
+    const pre = state.storage.status;
+    state.storage.status = null;
+    state.storage.submitting = false;
+    if (pre) { showStorage(pre); return; }
+    return checkStorage();
+  }
+  async function checkStorage({ focus = true } = {}) {
+    const token = state.storage.token = {};
+    renderLoading('Checking the encrypted password vault…');
+    let st;
+    try { st = await boundedRequest(service.storageStatus(), VAULT_TIMEOUT); }
+    catch (error) {
+      if (state.screen !== 'storage' || state.storage.token !== token) return;
+      showServiceError(error, { retry: () => checkStorage(), back });
+      return;
+    }
+    if (state.screen !== 'storage' || state.storage.token !== token) return;
+    if (st && st.state === 'ready') { storageReady(); return; }
+    showStorage(st || { state: 'unavailable', manageable: false });
+    afterRender(focus);
+  }
+  function storageReady() {
+    state.storage.ready = true;
+    const next = state.storage.returnTo || credentialsScreen();
+    state.storage.returnTo = null;
+    go(next);
+  }
+  async function boundedRequest(request, ms) {
+    let timer;
+    try {
+      return await Promise.race([request, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error('Setup did not answer'), {
+          publicMessage: 'Account setup did not answer in time. Nothing was changed; check the connection and try again.'
+        })), ms);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  function showStorage(st) {
+    const mode = vaultMode(st);
+    const text = VAULT_TEXT[mode];
+    const host = vaultHost();
+    const n = tpl('tpl-storage');
+    slot(n, 'title').textContent = text.title;
+    slot(n, 'lede').textContent = text.lede(host, st);
+    slot(n, 'vault-host').textContent = host;
+    slot(n, 'demo-notice').hidden = !service.isDemo;
+    // Only the applicable fields exist: a hidden required input would still block submit and confuse assistive tech.
+    if (mode === 'create') slot(n, 'create').hidden = false; else slot(n, 'create').remove();
+    if (mode === 'unlock') slot(n, 'unlock').hidden = false; else slot(n, 'unlock').remove();
+    slot(n, 'wait').hidden = true;
+    $$('[data-action="toggle-password"]', n).forEach(b => b.addEventListener('click', () => togglePassword(b, n)));
+    bindClearError(n);
+
+    const actions = slot(n, 'actions');
+    const backButton = btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back });
+    if (mode === 'create' || mode === 'unlock') {
+      const submit = el('button', { type: 'submit', class: 'btn btn--primary', text: text.submit });
+      actions.append(backButton, submit);
+      n.addEventListener('submit', (e) => { e.preventDefault(); submitStorage(n, mode, submit, text); });
+    } else {
+      actions.append(backButton, btn('Check again', { kind: 'primary', iconName: 'refresh', onclick: () => checkStorage() }));
+    }
+    stage.replaceChildren(n);
+  }
+
+  function storageNotice(form, message) {
+    const notice = slot(form, 'notice');
+    notice.replaceChildren(icon('alert'), el('div', { class: 'notice__body' }, [el('p', { class: 'notice__title', text: 'The vault could not be made ready' }), el('p', { text: message })]));
+    notice.hidden = false;
+    alertNow(message);
+  }
+
+  /** The vault password lives only in the form fields between submit and the service's answer. It is never kept in state or the draft. */
+  async function submitStorage(form, mode, submit, text) {
+    if (state.storage.submitting) return;
+    const create = mode === 'create';
+    const field = create ? 'f-vault-new' : 'f-vault-pass';
+    const password = $('#' + field, form).value;
+    const errors = {};
+    if (!password) errors[field] = create ? 'Choose a vault password.' : 'Enter the vault password.';
+    else if (create && $('#f-vault-confirm', form).value !== password) errors['f-vault-confirm'] = 'The two passwords don’t match. Type the same vault password in both fields.';
+    if (applyErrors(form, errors)) return;
+    slot(form, 'notice').hidden = true;
+    state.storage.submitting = true;
+    submit.disabled = true; submit.setAttribute('aria-busy', 'true'); submit.textContent = text.busy;
+    $$('input', form).forEach(i => { i.readOnly = true; });
+    announce(text.busy);
+    let result, failure = null;
+    try { result = await boundedRequest(service.unlockStorage({ vaultPassword: password, create }), VAULT_TIMEOUT); }
+    catch (error) { failure = error; }
+    if (state.screen !== 'storage' || !form.isConnected) return;
+    state.storage.submitting = false;
+    if (!failure && result && result.state === 'ready') {
+      $$('input', form).forEach(i => { i.value = ''; });
+      if (service.isDemo) syncDemoControls();
+      announce(create ? 'Vault created and unlocked.' : 'Vault unlocked.');
+      storageReady();
+      return;
+    }
+    submit.disabled = false; submit.removeAttribute('aria-busy'); submit.textContent = text.submit;
+    $$('input', form).forEach(i => { i.readOnly = false; });
+    const code = failure && failure.code;
+    const message = (failure && failure.publicMessage) || 'The vault could not be made ready. Nothing was changed; try again.';
+    if (code === 'vault_password_rejected' || code === 'vault_password_required') { applyErrors(form, { [field]: message }); return; }
+    if (code === 'vault_exists' || code === 'vault_missing') {
+      // The vault's state changed since it was checked. Re-read it and show the matching form.
+      $$('input', form).forEach(i => { i.value = ''; });
+      await checkStorage();
+      const fresh = $('[data-screen="storage"]', stage);
+      if (fresh) storageNotice(fresh, message);
+      return;
+    }
+    storageNotice(form, message);
   }
 
   /* ---------- IMAP & SMTP ---------- */
@@ -1386,7 +1572,7 @@
         body.append(
           el('p', { class: 'notice__title', text: `The password vault on ${host} needs attention` }),
           el('p', { text: problem.message }),
-          el('p', { text: 'Ask the agent or operator to unlock or repair the vault on the host; this page can’t do that, and nobody should ask you for the vault password in chat. You don’t need to enter your email password again. Once the vault is ready, choose Try again.' }),
+          el('p', { text: 'Choose Check the vault to see whether the existing vault is locked and unlock it here with its own password; a new vault is never created over an existing one. You don’t need to enter your email password again, and nobody should ask you for the vault password in chat. Once the vault is ready, choose Try again.' }),
           vaultHelp({ open: true }),
         );
       } else {
@@ -1405,7 +1591,9 @@
     } else if (c.cancelled) {
       actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), btn('Run checks again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect() }));
     } else if (problem && problem.kind === 'storage') {
-      actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), btn('Try again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect({ retry: true }) }));
+      actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }),
+        btn('Check the vault', { kind: 'secondary', iconName: 'lock', onclick: () => { state.storage.ready = false; state.storage.returnTo = 'review'; go('storage'); } }),
+        btn('Try again', { kind: 'primary', iconName: 'refresh', onclick: () => runConnect({ retry: true }) }));
     } else if (problem && problem.kind === 'expired') {
       actions.append(btn('Back', { kind: 'ghost', iconName: 'arrow-left', onclick: back }), d.method === 'google'
         ? btn('Sign in with Google again', { kind: 'primary', onclick: () => { state.oauth.status = 'idle'; d.google.identity = null; go('google'); } })
@@ -1578,7 +1766,7 @@
     });
   }
 
-  const SCREENS = { accounts: renderAccounts, choose: renderChoose, details: renderDetails, imap: renderImap, google: renderGoogle, 'google-setup': renderGoogleSetup, review: renderReview, connect: renderConnect, done: renderDone };
+  const SCREENS = { accounts: renderAccounts, choose: renderChoose, details: renderDetails, storage: renderStorage, imap: renderImap, google: renderGoogle, 'google-setup': renderGoogleSetup, review: renderReview, connect: renderConnect, done: renderDone };
 
   /* ---------------------------------------------------------------------
    * 7. Demo panel, gallery, theme, global actions, init
@@ -1616,6 +1804,7 @@
       state.installation = { host: demo.installation.host.trim() || null, remote: !!demo.installation.remote, oauthClientConfigured: !!demo.oauthClientConfigured };
       if (state.screen === 'google' || state.screen === 'review') render({ focus: false });
     }
+    if (key === 'storage' && state.screen === 'storage' && !state.storage.submitting) { state.storage.status = null; render({ focus: false }); }
     if (key === 'googleHelperAvailable' && state.screen === 'google-setup' && state.googleSetup.app) {
       state.googleSetup.app.helperAvailable = !!demo.googleHelperAvailable;
       if (!state.googleSetup.submitting) render({ focus: false });
@@ -1625,7 +1814,7 @@
     Object.assign(demo, DEMO_DEFAULTS());
     syncDemoControls(); service.reset();
     state.accountsLoaded = false; state.draft = newDraft(); state.oauth = { status: 'idle', identity: null, controller: null }; state.connect = newChecks();
-    state.googleSetup = newGoogleSetup();
+    state.googleSetup = newGoogleSetup(); state.storage = newStorage();
     state.installation = { host: null, remote: false, oauthClientConfigured: true };
     go('accounts'); announce('Demo reset.');
   });
@@ -1649,6 +1838,11 @@
     state.oauth = { status: 'idle', identity: null, controller: null };
     state.connect = newChecks();
     state.googleSetup = newGoogleSetup();
+    state.storage = newStorage();
+    // Every other scenario starts from a ready vault; the vault scenarios below pick their own state.
+    demo.storage = 'ready'; syncDemoControls();
+    // Vault states: the status call is already answered, so the screen renders synchronously.
+    const vault = (setting, status) => { demo.storage = setting; syncDemoControls(); state.draft = sampleDraft('imap'); state.storage.status = status; };
     const imapErrors = () => { const d = state.draft; d.incoming.host = 'imaps://imap.example.com'; d.incoming.port = '99999'; d.incoming.password = ''; d.outgoing.host = ''; };
     // Google sign-in setup states: the installation has no client yet; the status call is already answered.
     const gsetup = (step, { helper = true, configured = false, clientId = null } = {}) => {
@@ -1672,7 +1866,12 @@
       case 'choose': state.draft = newDraft(); go('choose'); break;
       case 'details': state.draft = newDraft(); state.draft.method = 'imap'; go('details'); break;
       case 'details-errors': state.draft = newDraft(); state.draft.method = 'imap'; state.draft.email = 'alex@example'; go('details'); $('form', stage).requestSubmit(); break;
-      case 'imap': state.draft = sampleDraft('imap'); go('imap'); break;
+      case 'storage-create': vault('missing', { state: 'missing', manageable: true }); go('storage'); break;
+      case 'storage-unlock': vault('locked', { state: 'locked', manageable: true }); go('storage'); break;
+      case 'storage-unlock-rejected': vault('locked', { state: 'locked', manageable: true }); go('storage'); applyErrors($('form', stage), { 'f-vault-pass': 'That password didn’t unlock the existing vault. Check your password manager for the vault password you chose earlier; the vault was not changed.' }); break;
+      case 'storage-unavailable': vault('unavailable', { state: 'unavailable', manageable: true }); go('storage'); break;
+      case 'storage-unmanaged': vault('unmanaged', { state: 'locked', manageable: false }); go('storage'); break;
+      case 'imap': state.draft = sampleDraft('imap'); state.storage.ready = true; go('imap'); break;
       case 'imap-errors': state.draft = sampleDraft('imap'); imapErrors(); go('imap'); $('form', stage).requestSubmit(); break;
       case 'imap-separate': state.draft = sampleDraft('imap'); state.draft.outgoing.sameLogin = false; state.draft.outgoing.username = 'demo-smtp'; go('imap'); break;
       case 'google-ready': state.draft = sampleDraft('google'); go('google'); break;

@@ -107,10 +107,22 @@ The first saved account now selects its stable account configuration as the
 normal runtime default, without replacing any existing runtime configuration.
 Reconnect updates the account link so that the selected default follows it.
 
+The setup UI now checks the Secret Service default collection before the
+credential screens (`storageStatus`) and creates or unlocks it on the user's
+behalf (`unlockStorage`) through the running keyring daemon's control socket.
+Readiness is always re-observed through the Secret Service and a store/read/remove
+round trip; a helper exit code is never treated as success, and an existing
+vault is never replaced. The isolated test `tests.test_onboarding_vault_isolated`
+drives a private D-Bus session and GNOME Keyring through the real backend:
+fresh host, create, lock, refused create over an existing vault, wrong
+password, unlock, daemon restart and unlock again. It skips when those tools
+are absent and never touches the operator's keyring.
+
 Still incomplete: importing the earlier installation's externally managed
-account; headless production keyring unlock configuration; browser-level
-Google consent verification and release acceptance. Profiles
-must not be called production-ready before these requirements are resolved.
+account; unattended keyring unlock after a host reboot (the UI unlocks a vault
+after restart, but only when a user is present); browser-level Google consent
+verification and release acceptance. Profiles must not be called
+production-ready before these requirements are resolved.
 
 ### Candidate installation and design review
 

@@ -178,7 +178,7 @@ class SetupHandler(BaseHTTPRequestHandler):
             if self.headers.get_content_type() != "application/json":
                 raise SetupError("Account settings must be sent as JSON.")
             request = json.loads(self.read_body())
-            if not isinstance(request, dict) or set(request) - {"action", "setupId", "draft", "accountId", "credentialsJson"}:
+            if not isinstance(request, dict) or set(request) - {"action", "setupId", "draft", "accountId", "credentialsJson", "vaultPassword", "create"}:
                 raise SetupError("Invalid setup action.")
             action, service = request.get("action"), self.server.service
             if action == "listAccounts":
@@ -189,6 +189,10 @@ class SetupHandler(BaseHTTPRequestHandler):
                 result = service.configure_google_application(request.get("credentialsJson"))
             elif action == "beginSetup":
                 result = service.begin(request.get("accountId"))
+            elif action == "storageStatus":
+                result = service.storage_status()
+            elif action == "unlockStorage":
+                result = service.unlock_storage(request.get("vaultPassword"), request.get("create", False))
             elif action == "cancelSetup":
                 result = service.cancel(request.get("setupId"))
             elif action == "beginOAuth":
@@ -217,7 +221,7 @@ class SetupHandler(BaseHTTPRequestHandler):
             if isinstance(error, SetupError) and error.code:
                 detail["code"] = error.code
             elif isinstance(error, CredentialError):
-                detail["code"] = "credential_storage"
+                detail["code"] = getattr(error, "code", None) or "credential_storage"
             self.reply(400, {"error": detail})
         except (ValueError, TypeError):
             self.reply(400, {"error": {"message": "Check the account settings and try again."}})

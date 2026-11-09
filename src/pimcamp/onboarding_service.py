@@ -133,6 +133,23 @@ class SetupService:
                 del self.attempts[setup_id]
             return {"ok": True}
 
+    def storage_status(self) -> dict:
+        """Describe the encrypted credential store before any email secret is requested."""
+        probe = getattr(self.credentials, "storage_status", None)
+        if probe is None:
+            return {"state": "ready", "manageable": False}
+        with self.lock:
+            return probe()
+
+    def unlock_storage(self, password, create) -> dict:
+        unlock = getattr(self.credentials, "unlock_storage", None)
+        if unlock is None:
+            raise SetupError("This installation's credential storage is managed outside this page.", code="vault_unmanaged")
+        if not isinstance(password, str) or not isinstance(create, bool):
+            raise SetupError("Enter the vault password first.", code="vault_password_required")
+        with self.lock:
+            return unlock(password, create=create)
+
     def list_accounts(self):
         return self.store.list_accounts()
 

@@ -37,9 +37,11 @@ absolute paths with `--himalaya` and `--carillon` if they are not on PATH.
 Setup opens an authenticated browser session on the fixed loopback port 33281.
 IMAP & SMTP accepts your email address, editable server settings, and shared or
 separate login credentials. Passwords go to an unlocked Secret Service keyring
-through `secret-tool`, not into configuration files. A headless installation
-also needs a working, unlocked Secret Service provider; installing the utility
-alone does not provide one. No test email is sent during setup.
+through `secret-tool`, not into configuration files. Before asking for an email
+password, setup checks that keyring and lets you create it or unlock it with its
+own separate password. A headless installation still needs a working Secret
+Service provider; installing the utility alone does not provide one. No test
+email is sent during setup.
 
 Google requires an installation-owned OAuth application and Ortie 2.2.0. The
 development UI's **Set up Google sign-in** flow guides project/client registration
@@ -62,9 +64,10 @@ consent. Do not ask for passwords in chat or substitute the demo HTML preview.
 A **password vault** (called a keyring on Linux) keeps email passwords and tokens
 encrypted on the mail host. A new vault needs a new password chosen by the user;
 an existing vault needs its existing password. This is separate from an email
-password and may be required again after restart. Explain this **before** any
-prompt. Headless vault creation/unlock is still an installation prerequisite,
-not an implemented screen in the included HTML UI.
+password and may be required again after restart. The setup UI explains this and
+creates or unlocks the vault on its own screen before asking for any email
+password; it never resets an existing vault. If the UI cannot reach the host's
+keyring daemon, the vault is created or unlocked on the host instead.
 
 ## Where Pimcamp fits
 

@@ -61,10 +61,15 @@ For **unlocking**, say instead:
 > Enter the existing vault password you chose earlier. This unlocks the same
 > vault; it does not create a new one or change your email password.
 
-Current limitation: the included HTML UI does **not** initialize or unlock a
-headless host's vault. Use the installation's verified Secret Service provider
-setup/unlock procedure, explaining why this separate prerequisite is appearing.
-Do not present a one-off operator helper as a packaged Pimcamp feature.
+The included HTML UI shows this explanation itself on the **Encrypted password
+vault** screen before it asks for any email password. The user creates a new
+vault (choose and confirm a password) or unlocks the existing one (enter its
+password) there; the page talks to the host's running keyring daemon and never
+creates a second one or resets an existing vault. When the page reports that it
+cannot reach the vault service on the host, or that the service is not
+answering, create or unlock the vault on the host with the installation's
+verified Secret Service procedure and have the user choose **Check again**. The
+vault password still never goes through chat.
 
 If private input genuinely needs a terminal, open a persistent task-specific
 tmux session and surface it using the user's desktop conventions. Preserve its

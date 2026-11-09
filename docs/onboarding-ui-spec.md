@@ -51,12 +51,20 @@ storage, possible unlock after restart, and the consequence of losing access.
 State that programs under the same OS user may access credentials while unlocked.
 Use the copy in [agent-assisted setup](agent-assisted-setup.md#explain-password-storage-before-prompting).
 
-The current implementation delegates this to installation setup; it is not yet
-an HTML screen. The intended integrated UI must explain and handle the supported
-storage prerequisite before email setup, without creating competing services or
-reporting success solely from a helper exit code. Existing vaults must never be
-reset or overwritten. This remains a visible implementation gap, not completed
-UI functionality.
+The included HTML UI now implements this as the **Encrypted password vault**
+screen (`state.screen === 'storage'`), reached from Account details before the
+IMAP & SMTP or Google screen and from the connect screen's vault failure. The
+backend observes the default collection through the Secret Service itself
+(missing, locked, ready or unavailable) and never infers readiness from a helper
+exit code: after an unlock or create request it re-reads the collection and
+proves a store/read/remove round trip before reporting ready. Create is refused
+when a vault already exists and unlock is refused when none exists, so an
+existing vault is never reset or overwritten. The vault password travels once in
+the request body and is not logged, stored, or echoed. Unlock and create reach
+the already running keyring daemon through its control socket; no competing
+daemon is started. When that socket is out of reach, or the service does not
+answer, the screen explains the state, keeps everything entered, and asks the
+installation owner to act on the host.
 
 ### Email account screens
 

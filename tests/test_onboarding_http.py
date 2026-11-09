@@ -28,6 +28,23 @@ class SetupHTTPTests(unittest.TestCase):
         self.assertEqual(response, (200, {'ok':True, 'accountId':'saved'}))
         self.service.commit.assert_not_called()
 
+    def test_vault_actions_route_to_service_and_never_echo_the_password(self):
+        self.service.storage_status.return_value = {'state':'locked', 'manageable':True}
+        response, _ = self.request(payload={'action':'storageStatus'})
+        self.assertEqual(response, (200, {'state':'locked', 'manageable':True}))
+        response, _ = self.request(payload={'action':'storageStatus'}, headers={'X-Pimcamp-CSRF':'wrong'})
+        self.assertEqual(response[0], 403)
+        self.service.unlock_storage.return_value = {'state':'ready', 'manageable':True}
+        response, _ = self.request(payload={'action':'unlockStorage', 'vaultPassword':'fixture-vault-password', 'create':True})
+        self.assertEqual(response, (200, {'state':'ready', 'manageable':True}))
+        self.service.unlock_storage.assert_called_once_with('fixture-vault-password', True)
+        self.service.unlock_storage.side_effect = CredentialError('That password did not unlock the vault.', code='vault_password_rejected')
+        response, _ = self.request(payload={'action':'unlockStorage', 'vaultPassword':'fixture-vault-password'})
+        self.assertEqual(response[0], 400)
+        self.assertEqual(response[1]['error']['code'], 'vault_password_rejected')
+        self.assertNotIn('fixture-vault-password', str(response))
+        self.assertEqual(self.service.unlock_storage.call_args.args, ('fixture-vault-password', False))
+
     def test_recovery_errors_have_codes_without_secret_details(self):
         for error, code in ((SetupError('Expired', code='setup_expired'), 'setup_expired'),
                             (CredentialError('Check the vault'), 'credential_storage')):
