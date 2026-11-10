@@ -12,6 +12,8 @@
   const gate = byId("gate");
   const form = byId("reply-form");
   const composerCard = byId("composer-card");
+  const sessionStorageKey = "pimcamp-mail-session-v2";
+  const activityDebounceMs = 500;
   const state = {
     locator: currentLocator(),
     principalId: "",
@@ -28,7 +30,17 @@
     busy: false,
     submitting: false,
     reconciling: false,
-    discarding: false
+    discarding: false,
+    idleDeadline: "",
+    absoluteDeadline: "",
+    deadlineTimer: null,
+    activityTimer: null,
+    activityPromise: null,
+    activityError: null,
+    renewalPromise: null,
+    resumeCheckPending: false,
+    bootPending: false,
+    logoutPending: false
   };
 
   function currentLocator() {
@@ -50,7 +62,155 @@
   }
 
   function isSessionError(error) {
-    return error?.status === 401 || ["session_expired", "authentication_required", "unauthenticated"].includes(error?.code);
+    return error?.status === 401 && error?.code === "session_expired";
+  }
+
+  function validDeadline(value) {
+    const match = typeof value === "string" &&
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|\+00:00)$/.exec(value);
+    if (!match) return false;
+    const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const hour = Number(hourText);
+    const minute = Number(minuteText);
+    const second = Number(secondText);
+    if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return false;
+    const calendar = new Date(0);
+    calendar.setUTCFullYear(year, month - 1, day);
+    calendar.setUTCHours(hour, minute, second, 0);
+    return calendar.getUTCFullYear() === year && calendar.getUTCMonth() === month - 1 &&
+      calendar.getUTCDate() === day && Number.isFinite(Date.parse(value));
+  }
+
+  function validSessionShape(payload) {
+    return payload && typeof payload === "object" &&
+      validDeadline(payload.idle_deadline) && validDeadline(payload.absolute_deadline) &&
+      Date.parse(payload.idle_deadline) <= Date.parse(payload.absolute_deadline);
+  }
+
+  function sessionExpired(now = Date.now()) {
+    return !validDeadline(state.idleDeadline) || !validDeadline(state.absoluteDeadline) ||
+      now >= Date.parse(state.idleDeadline) || now >= Date.parse(state.absoluteDeadline);
+  }
+
+  function foregroundVisible() {
+    return document.visibilityState !== "hidden";
+  }
+
+  function clearTimer(name) {
+    if (state[name] !== null) clearTimeout(state[name]);
+    state[name] = null;
+  }
+
+  function saveSessionSnapshot() {
+    if (!state.principalId || !state.csrfToken || !validDeadline(state.idleDeadline) || !validDeadline(state.absoluteDeadline)) return;
+    const snapshot = {
+      status: "authenticated",
+      principal_id: state.principalId,
+      csrf_token: state.csrfToken,
+      accounts: [...state.authorizedAccounts.values()],
+      idle_deadline: state.idleDeadline,
+      absolute_deadline: state.absoluteDeadline,
+      logout_pending: state.logoutPending
+    };
+    try { window.sessionStorage?.setItem(sessionStorageKey, JSON.stringify(snapshot)); } catch (_) { /* this tab can continue without refresh recovery */ }
+  }
+
+  function readSessionSnapshot() {
+    try {
+      const raw = window.sessionStorage?.getItem(sessionStorageKey);
+      if (!raw) return null;
+      const snapshot = JSON.parse(raw);
+      if (snapshot?.status !== "authenticated" || typeof snapshot.principal_id !== "string" || !snapshot.principal_id ||
+          typeof snapshot.csrf_token !== "string" || !snapshot.csrf_token || !Array.isArray(snapshot.accounts) ||
+          !snapshot.accounts.length || !validSessionShape(snapshot)) return null;
+      return snapshot;
+    } catch (_) { return null; }
+  }
+
+  function clearSessionSnapshot() {
+    clearTimer("deadlineTimer");
+    clearTimer("activityTimer");
+    state.idleDeadline = "";
+    state.absoluteDeadline = "";
+    state.csrfToken = "";
+    try { window.sessionStorage?.removeItem(sessionStorageKey); } catch (_) { /* local display remains gated */ }
+  }
+
+  function scheduleDeadline() {
+    clearTimer("deadlineTimer");
+    if (!validDeadline(state.idleDeadline) || !validDeadline(state.absoluteDeadline)) return;
+    const deadline = Math.min(Date.parse(state.idleDeadline), Date.parse(state.absoluteDeadline));
+    const delay = Math.max(0, deadline - Date.now());
+    state.deadlineTimer = setTimeout(() => {
+      state.deadlineTimer = null;
+      if (state.activityPromise) {
+        void state.activityPromise.then(() => {
+          if (sessionExpired()) void requireRenewal();
+          else if (state.deadlineTimer === null) scheduleDeadline();
+        });
+      } else if (sessionExpired()) void requireRenewal();
+      else scheduleDeadline();
+    }, delay);
+  }
+
+  function scheduleEditingActivity() {
+    clearTimer("activityTimer");
+    if (!state.principalId || !state.idleDeadline || !foregroundVisible()) return;
+    state.activityTimer = setTimeout(() => {
+      state.activityTimer = null;
+      void sendActivity().catch(() => undefined);
+    }, activityDebounceMs);
+  }
+
+  async function sendActivity() {
+    if (!foregroundVisible()) return false;
+    if (state.activityPromise) return state.activityPromise;
+    if (sessionExpired()) {
+      await requireRenewal();
+      return false;
+    }
+    const originalAbsoluteDeadline = state.absoluteDeadline;
+    state.activityPromise = (async () => {
+      try {
+        const result = await client.activity();
+        if (state.absoluteDeadline !== originalAbsoluteDeadline || !state.csrfToken) return false;
+        if (!validSessionShape(result) || Date.parse(result.absolute_deadline) > Date.parse(originalAbsoluteDeadline)) {
+          state.activityError = new Error("The mail session deadline changed unexpectedly.");
+          await requireRenewal();
+          return false;
+        }
+        const effectiveAbsoluteDeadline = Date.parse(result.absolute_deadline) < Date.parse(originalAbsoluteDeadline)
+          ? result.absolute_deadline
+          : originalAbsoluteDeadline;
+        if (Date.now() >= Date.parse(result.idle_deadline) || Date.now() >= Date.parse(effectiveAbsoluteDeadline)) {
+          state.activityError = null;
+          await requireRenewal();
+          return false;
+        }
+        state.activityError = null;
+        state.idleDeadline = result.idle_deadline;
+        state.absoluteDeadline = effectiveAbsoluteDeadline;
+        saveSessionSnapshot();
+        scheduleDeadline();
+        return true;
+      } catch (error) {
+        state.activityError = error;
+        if (isSessionError(error)) await requireRenewal();
+        else showComposerMessage(publicError(error), "error");
+        return false;
+      } finally {
+        state.activityPromise = null;
+      }
+    })();
+    return state.activityPromise;
+  }
+
+  async function ensureSessionActivity() {
+    clearTimer("activityTimer");
+    return sendActivity();
   }
 
   function publicError(error) {
@@ -68,9 +228,10 @@
     gate.hidden = false;
     byId("gate-title").textContent = title;
     byId("gate-message").textContent = message;
-    byId("gate-actions").hidden = mode !== "reauth" && mode !== "retry";
+    byId("gate-actions").hidden = mode !== "reauth" && mode !== "retry" && mode !== "logout-retry";
     byId("continue-session").hidden = mode !== "reauth";
-    byId("retry-open").hidden = mode !== "retry";
+    byId("retry-open").hidden = mode !== "retry" && mode !== "logout-retry";
+    byId("retry-open").textContent = mode === "logout-retry" ? "Try logout again" : "Try again";
     gate.querySelector(".spinner").hidden = mode !== "loading";
   }
 
@@ -255,7 +416,7 @@
   }
 
   function statusBlocksSubmit() {
-    return !mailState.canSubmit({
+    return sessionExpired() || state.busy || !mailState.canSubmit({
       status: state.draft?.operation_status,
       operationId: state.draft?.operation_id,
       retryEligible: state.draft?.retry_eligible,
@@ -268,7 +429,7 @@
   }
 
   function updateFormAvailability() {
-    const editable = !state.submitting && !state.reconciling && !state.discarding && mailState.canEditDraft({
+    const editable = !sessionExpired() && !state.busy && !state.submitting && !state.reconciling && !state.discarding && mailState.canEditDraft({
       status: state.draft?.operation_status,
       operationId: state.draft?.operation_id,
       retryEligible: state.draft?.retry_eligible,
@@ -279,7 +440,11 @@
     }
     const discard = byId("discard-draft");
     discard.hidden = !state.draft || state.draft.discarded === true || state.draft.operation_status === "sent";
-    discard.disabled = !state.draft || state.submitting || state.reconciling || state.discarding;
+    discard.disabled = !state.draft || sessionExpired() || state.busy || state.submitting || state.reconciling || state.discarding;
+    const newReply = byId("new-reply");
+    if (newReply) newReply.disabled = sessionExpired() || state.submitting || state.busy;
+    const logout = byId("logout-session");
+    if (logout) logout.disabled = sessionExpired() || state.busy || state.submitting || state.reconciling;
   }
 
   function updateSendButton() {
@@ -576,9 +741,22 @@
     if (state.draft.operation_id) await querySendStatus();
   }
 
-  async function loadMessage() {
+  async function loadMessage({ recordForegroundActivity = false } = {}) {
     if (!state.locator) {
       setGate("Message link unavailable", "This link does not contain a valid message reference.", "invalid");
+      return;
+    }
+    if (!foregroundVisible()) {
+      state.resumeCheckPending = true;
+      return;
+    }
+    if (recordForegroundActivity && !(await ensureSessionActivity())) {
+      if (!sessionExpired()) {
+        const detail = foregroundVisible()
+          ? publicError(state.activityError)
+          : "Bring this tab to the foreground to check the mail session.";
+        setGate("Message could not be opened", detail, "retry");
+      }
       return;
     }
     if (state.draft && state.formBound) await queueSave();
@@ -603,7 +781,7 @@
   async function acceptSession(payload) {
     if (payload.status !== "authenticated" || typeof payload.principal_id !== "string" || !payload.principal_id ||
         typeof payload.csrf_token !== "string" || !payload.csrf_token || !Array.isArray(payload.accounts) ||
-        !payload.accounts.length) {
+        !payload.accounts.length || !validSessionShape(payload)) {
       throw new Error("The mail session response is incomplete.");
     }
     const accounts = new Map();
@@ -616,14 +794,30 @@
     }
     state.principalId = payload.principal_id;
     state.authorizedAccounts = accounts;
+    state.csrfToken = payload.csrf_token;
+    state.idleDeadline = payload.idle_deadline;
+    state.absoluteDeadline = payload.absolute_deadline;
     client.setCsrfToken(payload.csrf_token);
+    saveSessionSnapshot();
+    scheduleDeadline();
   }
 
   async function requireRenewal() {
-    if (state.draft) await queueSave();
-    hidePrivateContent({ clearAuthorization: true });
-    client.setCsrfToken("");
-    setGate("Mail session expired", "Your reply is preserved in this browser. Continue your mail session to reopen the message and check any send operation.", "reauth");
+    if (state.renewalPromise) return state.renewalPromise;
+    state.renewalPromise = (async () => {
+      const save = state.draft ? queueSave() : Promise.resolve(true);
+      clearSessionSnapshot();
+      state.authorizedAccounts = new Map();
+      client.setCsrfToken("");
+      hidePrivateContent({ clearAuthorization: true });
+      setGate("Mail session expired", "Your reply and send-operation identity are preserved in this browser. Continue your mail session to reopen the message and check any send operation.", "reauth");
+      const saved = await save;
+      if (!saved && state.draft) {
+        setGate("Mail session expired", "Browser storage could not confirm recovery. The reply remains only in this tab's memory; keep this tab open and continue your mail session to reopen it.", "reauth");
+      }
+    })();
+    try { await state.renewalPromise; }
+    finally { state.renewalPromise = null; }
   }
 
   function hidePrivateContent({ clearAuthorization = false } = {}) {
@@ -652,15 +846,23 @@
     state.prepared = false;
     state.storageReady = false;
     state.fromChoices = [];
+    updateFormAvailability();
   }
 
   async function resumeSession() {
     if (state.busy) return;
+    if (!foregroundVisible()) return;
     state.busy = true;
     setGate("Opening your message", "Checking your mail session…", "loading");
     try {
       const session = await client.openSession();
       await acceptSession(session);
+      state.logoutPending = false;
+      saveSessionSnapshot();
+      if (sessionExpired()) {
+        await requireRenewal();
+        return;
+      }
       await loadMessage();
     } catch (error) {
       const auth = isSessionError(error);
@@ -669,12 +871,167 @@
         : publicError(error), auth ? "reauth" : "retry");
     } finally {
       state.busy = false;
+      updateSendButton();
+      if (state.resumeCheckPending && foregroundVisible()) {
+        state.resumeCheckPending = false;
+        void validateSessionOnResume();
+      }
+    }
+  }
+
+  async function validateSessionOnResume({ recordForegroundActivity = false } = {}) {
+    if (state.logoutPending) return;
+    if (!foregroundVisible()) {
+      state.resumeCheckPending = true;
+      return;
+    }
+    if (state.busy || state.submitting || state.reconciling) {
+      state.resumeCheckPending = true;
+      return;
+    }
+    state.resumeCheckPending = false;
+    if (!state.principalId || sessionExpired()) {
+      await requireRenewal();
+      return;
+    }
+    state.busy = true;
+    hidePrivateContent();
+    setGate("Checking your mail session", "Checking authorization before showing this message. This check does not extend the session.", "loading");
+    try {
+      await loadMessage({ recordForegroundActivity });
+    } finally {
+      state.busy = false;
+      updateSendButton();
+      if (state.resumeCheckPending && foregroundVisible()) {
+        state.resumeCheckPending = false;
+        void validateSessionOnResume();
+      }
+    }
+  }
+
+  async function logoutSession(event) {
+    event?.preventDefault();
+    if (state.busy || state.submitting || state.reconciling || sessionExpired()) {
+      if (sessionExpired()) await requireRenewal();
+      return;
+    }
+    state.busy = true;
+    updateSendButton();
+    try {
+      if (state.draft && state.formBound && !(await queueSave())) {
+        showComposerMessage("Save the reply in this browser before ending the mail session.", "error");
+        return;
+      }
+      if (!(await ensureSessionActivity())) {
+        if (!sessionExpired()) {
+          state.logoutPending = true;
+          saveSessionSnapshot();
+          hidePrivateContent();
+          const detail = state.activityError?.code === "permission_denied"
+            ? publicError(state.activityError)
+            : "The private session could not be confirmed before logout. Private content is hidden; retry when the connection is available.";
+          setGate("Logout not confirmed", detail, "logout-retry");
+        }
+        return;
+      }
+      await client.logout();
+      clearSessionSnapshot();
+      client.setCsrfToken("");
+      state.authorizedAccounts = new Map();
+      state.principalId = "";
+      state.logoutPending = false;
+      hidePrivateContent({ clearAuthorization: true });
+      setGate("Mail session ended", "Your local reply and send-operation records are preserved in this browser. Continue mail session to reopen the message.", "reauth");
+    } catch (error) {
+      if (isSessionError(error)) {
+        await requireRenewal();
+      } else {
+        state.logoutPending = true;
+        saveSessionSnapshot();
+        hidePrivateContent();
+        setGate("Logout not confirmed", "Private content is hidden, but Pimcamp could not confirm that the mail session ended. Retry logout when the connection is available.", "logout-retry");
+      }
+    } finally {
+      state.busy = false;
+      updateSendButton();
+    }
+  }
+
+  async function retryGateAction() {
+    if (state.logoutPending && !sessionExpired()) return logoutSession();
+    if (state.principalId && !sessionExpired()) return validateSessionOnResume({ recordForegroundActivity: true });
+    return resumeSession();
+  }
+
+  async function boot() {
+    if (!state.locator) {
+      setGate("Message link unavailable", "This link does not contain a valid message reference.", "invalid");
+      return;
+    }
+    if (!foregroundVisible()) {
+      state.bootPending = true;
+      setGate("Mail tab is paused", "Bring this tab to the foreground before checking the private message.", "loading");
+      return;
+    }
+    state.bootPending = false;
+    const cached = readSessionSnapshot();
+    const navigationType = window.performance?.getEntriesByType?.("navigation")?.[0]?.type || "navigate";
+    if (!cached) {
+      if (navigationType === "reload" || navigationType === "back_forward") {
+        setGate("Mail session needed", "Continue your mail session to check access before reopening this message.", "reauth");
+      } else {
+        await resumeSession();
+      }
+      return;
+    }
+    state.busy = true;
+    try {
+      state.logoutPending = cached.logout_pending === true;
+      await acceptSession(cached);
+      if (state.logoutPending) {
+        if (sessionExpired()) {
+          await requireRenewal();
+        } else {
+          setGate("Logout not confirmed", "Private content stays hidden until you retry ending the mail session or continue after the session expires.", "logout-retry");
+        }
+        return;
+      }
+      if (sessionExpired()) {
+        await requireRenewal();
+        return;
+      }
+      await loadMessage({ recordForegroundActivity: true });
+    } finally {
+      state.busy = false;
+      updateSendButton();
+      if (state.resumeCheckPending && foregroundVisible()) {
+        state.resumeCheckPending = false;
+        void validateSessionOnResume();
+      }
+    }
+  }
+
+  function onVisibilityChange() {
+    if (document.visibilityState === "hidden") {
+      if (state.draft && state.formBound) void queueSave();
+      return;
+    }
+    if (state.bootPending) {
+      void boot();
+      return;
+    }
+    if (state.logoutPending) {
+      if (sessionExpired()) void requireRenewal();
+      return;
+    }
+    if (state.principalId) {
+      void validateSessionOnResume();
     }
   }
 
   async function discardDraft(event) {
     event.preventDefault();
-    if (!state.draft || state.draft.discarded === true || state.submitting || state.reconciling || state.discarding) return;
+    if (!state.draft || state.draft.discarded === true || state.busy || state.submitting || state.reconciling || state.discarding) return;
     const mustRetainOperation = state.draft.operation_attempted === true ||
       ["pending", "unknown"].includes(state.draft.operation_status);
     const prompt = mustRetainOperation
@@ -685,6 +1042,8 @@
     state.discarding = true;
     updateSendButton();
     try {
+      const activityAccepted = await ensureSessionActivity();
+      if (!activityAccepted && sessionExpired()) return;
       await state.saving.catch(() => undefined);
       if (mustRetainOperation) {
         const marker = {
@@ -754,6 +1113,7 @@
     byId("new-reply").disabled = true;
     showComposerMessage("Preparing a new reply. No email will be sent.");
     try {
+      if (!(await ensureSessionActivity())) return;
       const prepared = await client.prepareReply(state.locator, "");
       if (prepared.account_id !== state.accountId || prepared.locator !== state.locator) {
         throw new Error("The reply account did not match the source account.");
@@ -808,6 +1168,7 @@
     showComposerMessage("Preparing a corrected reply. No email will be sent.");
     try {
       if (!(await queueSave())) return;
+      if (!(await ensureSessionActivity())) return;
       const prepared = await client.prepareReply(state.locator, reviewedReply.body_text);
       if (prepared.account_id !== state.accountId || prepared.locator !== state.locator) {
         throw new Error("The reply account did not match the source account.");
@@ -883,6 +1244,7 @@
     showComposerMessage("Submitting the reviewed reply…");
     try {
       if (!(await queueSave())) return;
+      if (!(await ensureSessionActivity())) return;
       const operationId = mailState.operationIdForAttempt(previousOperationId);
       state.draft.operation_id = operationId;
       state.draft.operation_status = "sending";
@@ -925,13 +1287,15 @@
     }
   }
 
-  form.addEventListener("input", () => { queueSave(); });
-  form.addEventListener("change", () => { queueSave(); });
+  form.addEventListener("input", () => { queueSave(); scheduleEditingActivity(); });
+  form.addEventListener("change", () => { queueSave(); scheduleEditingActivity(); });
   form.addEventListener("submit", submitReply);
   byId("discard-draft").addEventListener("click", discardDraft);
   byId("new-reply").addEventListener("click", startNewReply);
+  byId("logout-session").addEventListener("click", logoutSession);
   byId("continue-session").addEventListener("click", resumeSession);
-  byId("retry-open").addEventListener("click", resumeSession);
-  if (!state.locator) setGate("Message link unavailable", "This link does not contain a valid message reference.", "invalid");
-  else resumeSession();
+  byId("retry-open").addEventListener("click", retryGateAction);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("pageshow", event => { if (event.persisted) onVisibilityChange(); });
+  void boot();
 })();

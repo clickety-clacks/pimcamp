@@ -22,6 +22,8 @@ test("page references only locally provided same-origin assets", () => {
   assert.match(html, /id="source-reply-to-row"/);
   assert.match(html, /id="discard-draft"/);
   assert.match(html, /id="new-reply"/);
+  assert.match(html, /id="logout-session"/);
+  assert.match(html, /id="retry-open"/);
   const form = html.match(/<form\b[^>]*>([\s\S]*?)<\/form>/)?.[1] || "";
   assert.doesNotMatch(form, /\bname=/);
 });
@@ -79,13 +81,38 @@ function mailAppFixture({
   statuses = [],
   prepares = [],
   submissions = [],
+  activities = [],
+  sessionResponses = [],
+  logoutResponses = [],
+  messageResponses = [],
   confirmResult = true,
   failPut = false,
-  failDelete = false
+  failDelete = false,
+  navigationType = "navigate",
+  initialVisibility = "visible",
+  now: initialNow = Date.parse("2026-11-10T12:00:00Z"),
+  sessionSnapshot = null
 } = {}) {
+  let currentTime = initialNow;
+  const timers = new Map();
+  let nextTimerId = 1;
+  const setFixtureTimeout = (callback, delay) => {
+    const id = nextTimerId++;
+    timers.set(id, { callback, at: currentTime + Math.max(0, delay) });
+    return id;
+  };
+  const clearFixtureTimeout = id => timers.delete(id);
+  class FixtureDate extends Date { static now() { return currentTime; } }
   let savedDraft = storedDraft ? structuredClone(storedDraft) : undefined;
-  const calls = { session: [], message: [], prepare: [], status: [], submit: [], puts: [], deletes: [] };
+  const calls = { session: [], activity: [], logout: [], message: [], prepare: [], status: [], submit: [], puts: [], deletes: [] };
   const confirmPrompts = [];
+  const activityQueue = [...activities];
+  const sessionQueue = [...sessionResponses];
+  const logoutQueue = [...logoutResponses];
+  const messageQueue = [...messageResponses];
+  const sessionStorageRecords = new Map();
+  if (sessionSnapshot) sessionStorageRecords.set("pimcamp-mail-session-v2", JSON.stringify(sessionSnapshot));
+  let activeAbsoluteDeadline = sessionSnapshot?.absolute_deadline || "";
   const store = {
     async get() { return savedDraft ? structuredClone(savedDraft) : undefined; },
     async put(value) {
@@ -104,15 +131,39 @@ function mailAppFixture({
     setCsrfToken() {},
     async openSession() {
       calls.session.push(true);
+      const response = sessionQueue.shift();
+      if (response instanceof Error) throw response;
+      if (response) return structuredClone(response);
+      activeAbsoluteDeadline = new Date(currentTime + 12 * 60 * 60 * 1000).toISOString();
       return {
         status: "authenticated",
         principal_id: "principal-1",
         csrf_token: "csrf-fixture",
-        accounts: [{ account_id: "account-1", label: "Work" }]
+        accounts: [{ account_id: "account-1", label: "Work" }],
+        idle_deadline: new Date(currentTime + 30 * 60 * 1000).toISOString(),
+        absolute_deadline: activeAbsoluteDeadline
       };
+    },
+    async activity() {
+      calls.activity.push({ body: {} });
+      const response = activityQueue.shift();
+      if (response instanceof Error) throw response;
+      if (response) return structuredClone(response);
+      return {
+        idle_deadline: new Date(Math.min(currentTime + 30 * 60 * 1000, Date.parse(activeAbsoluteDeadline))).toISOString(),
+        absolute_deadline: activeAbsoluteDeadline
+      };
+    },
+    async logout() {
+      calls.logout.push(true);
+      const response = logoutQueue.shift();
+      if (response instanceof Error) throw response;
+      return null;
     },
     async getMessage(locator) {
       calls.message.push(locator);
+      const response = messageQueue.shift();
+      if (response instanceof Error) throw response;
       return {
         account_id: "account-1",
         account_label: "Work",
@@ -148,7 +199,7 @@ function mailAppFixture({
     }
   };
   const elementIds = [
-    "main", "gate", "gate-title", "gate-message", "gate-actions", "continue-session", "retry-open", "spinner",
+    "main", "gate", "gate-title", "gate-message", "gate-actions", "continue-session", "retry-open", "spinner", "logout-session",
     "mail-view", "draft-state", "notice", "source-heading", "account-badge", "source-from", "source-to",
     "source-cc-row", "source-cc", "source-reply-to-row", "source-reply-to", "source-date", "source-subject",
     "source-body", "composer-card", "composer-heading", "reply-form", "reply-from", "from-help", "reply-to",
@@ -208,6 +259,21 @@ function mailAppFixture({
   }
   const window = {
     location: { pathname: "/mail/m/locator-1" },
+    performance: { getEntriesByType: () => [{ type: navigationType }] },
+    sessionStorage: {
+      getItem(key) { return sessionStorageRecords.get(key) ?? null; },
+      setItem(key, value) { sessionStorageRecords.set(key, value); },
+      removeItem(key) { sessionStorageRecords.delete(key); }
+    },
+    listeners: new Map(),
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    },
+    async emit(type, event = {}) {
+      for (const listener of this.listeners.get(type) || []) await listener(event);
+    },
     confirm(message) { confirmPrompts.push(message); return confirmResult; },
     PimcampMailClient: { createMailClient: () => client },
     PimcampMailText: mailText,
@@ -215,6 +281,16 @@ function mailAppFixture({
     PimcampMailState: mailState
   };
   const document = {
+    visibilityState: initialVisibility,
+    listeners: new Map(),
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    },
+    async emit(type, event = {}) {
+      for (const listener of this.listeners.get(type) || []) await listener(event);
+    },
     getElementById(id) { return elements.get(id); },
     createElement() { return new FakeElement(); }
   };
@@ -222,12 +298,33 @@ function mailAppFixture({
     window,
     document,
     Option: FakeOption,
-    crypto: { randomUUID: () => "fresh-draft-id" }
+    crypto: { randomUUID: () => "fresh-draft-id" },
+    Date: FixtureDate,
+    setTimeout: setFixtureTimeout,
+    clearTimeout: clearFixtureTimeout
   });
   async function settle() {
     for (let i = 0; i < 12; i += 1) await new Promise(resolve => setImmediate(resolve));
   }
-  return { elements, calls, confirmPrompts, get savedDraft() { return savedDraft; }, settle };
+  async function advance(ms) {
+    const target = currentTime + ms;
+    while (true) {
+      const due = [...timers.entries()].filter(([, timer]) => timer.at <= target).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!due) break;
+      const [id, timer] = due;
+      timers.delete(id);
+      currentTime = timer.at;
+      timer.callback();
+      await settle();
+    }
+    currentTime = target;
+    await settle();
+  }
+  return {
+    elements, calls, confirmPrompts, sessionStorageRecords,
+    get savedDraft() { return savedDraft; }, settle, advance,
+    setVisibility(value) { document.visibilityState = value; return document.emit("visibilitychange"); }
+  };
 }
 
 function preparedMailReply(operationId, {
@@ -293,7 +390,11 @@ test("source text prefers a plain part and falls back to HTML extraction", () =>
 test("mail client uses the agreed same-origin routes and read-only status lookup", async () => {
   const calls = [];
   const responses = [
-    { status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-fixture", accounts: [{ account_id: "account-1", label: "Work" }] },
+    {
+      status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-fixture",
+      accounts: [{ account_id: "account-1", label: "Work" }],
+      idle_deadline: "2026-11-10T12:30:00Z", absolute_deadline: "2026-11-11T00:00:00Z"
+    },
     {
       account_id: "account-1", account_label: "Work", locator: "opaque locator",
       source: { from: [], to: [], cc: [], reply_to: [], subject: "Fixture", date: "2026-11-10T00:00:00Z" },
@@ -339,6 +440,71 @@ test("mail client uses the agreed same-origin routes and read-only status lookup
   assert.deepEqual(JSON.parse(calls[2].options.body), { locator: "opaque locator", body_text: "draft text" });
   assert.ok(calls.every(call => !call.path.endsWith("/submit")));
   await assert.rejects(client.getMessage("bad/locator"), { code: "invalid_request" });
+});
+
+test("mail session activity renews only idle deadline and logout requires a 204 response", async () => {
+  const calls = [];
+  const absoluteDeadline = "2026-11-11T00:00:00Z";
+  const responses = [
+    {
+      status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-fixture",
+      accounts: [{ account_id: "account-1", label: "Work" }],
+      idle_deadline: "2026-11-10T12:30:00Z", absolute_deadline: absoluteDeadline
+    },
+    { idle_deadline: "2026-11-10T12:45:00Z", absolute_deadline: absoluteDeadline }
+  ];
+  const client = mailClient.createMailClient({
+    fetchImpl: async (path, options) => {
+      calls.push({ path, options });
+      if (path.endsWith("/logout")) return { ok: true, status: 204, json: async () => { throw new Error("no content"); } };
+      return jsonResponse(responses.shift());
+    }
+  });
+
+  await client.openSession();
+  client.setCsrfToken("csrf-fixture");
+  const activity = await client.activity();
+  await client.logout();
+
+  assert.equal(activity.idle_deadline, "2026-11-10T12:45:00Z");
+  assert.equal(activity.absolute_deadline, absoluteDeadline);
+  assert.deepEqual(calls.map(call => [call.options.method, call.path]), [
+    ["POST", "/mail/api/session"],
+    ["POST", "/mail/api/session/activity"],
+    ["POST", "/mail/api/session/logout"]
+  ]);
+  for (const call of calls.slice(1)) {
+    assert.equal(call.options.headers["X-Pimcamp-CSRF"], "csrf-fixture");
+    assert.deepEqual(JSON.parse(call.options.body), {});
+    assert.equal(call.options.credentials, "same-origin");
+    assert.equal(call.options.cache, "no-store");
+  }
+
+  const invalid = mailClient.createMailClient({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) });
+  invalid.setCsrfToken("csrf-fixture");
+  await assert.rejects(invalid.logout(), { code: "invalid_response" });
+});
+
+test("mail client preserves flat v2 errors and distinguishes expired sessions from permission denial", async () => {
+  const errors = [
+    { contract_version: "2", code: "session_expired", retryable: false, message: "Continue mail session." },
+    { contract_version: "2", code: "permission_denied", retryable: false, message: "This account is unavailable." }
+  ];
+  const statuses = [401, 403];
+  const client = mailClient.createMailClient({
+    fetchImpl: async () => jsonResponse(errors.shift(), statuses.shift())
+  });
+
+  const expired = await client.getMessage("loc-1").catch(error => error);
+  const denied = await client.getMessage("loc-1").catch(error => error);
+  assert.equal(expired.code, "session_expired");
+  assert.equal(expired.status, 401);
+  assert.equal(expired.contractVersion, "2");
+  assert.equal(expired.retryable, false);
+  assert.equal(denied.code, "permission_denied");
+  assert.equal(denied.status, 403);
+  assert.equal(denied.contractVersion, "2");
+  assert.equal(denied.retryable, false);
 });
 
 test("mail client requires the authenticated v2 session response", async () => {
@@ -401,6 +567,7 @@ test("redirected API response requires mail-session renewal without exposing red
   });
   const result = await client.getMessage("loc-1").catch(error => error);
   assert.equal(result.code, "session_expired");
+  assert.equal(result.status, 401);
   assert.equal(result.payload, null);
 });
 
@@ -590,6 +757,297 @@ test("reauthentication restores the same draft and operation without preparing o
   assert.equal(app.calls.prepare.length, 0);
   assert.deepEqual(app.calls.status.map(call => call.operationId), ["op-reauth", "op-reauth"]);
   assert.equal(app.calls.submit.length, 0);
+});
+
+test("refresh requires a deliberate session action when the tab has no cached session", async () => {
+  const app = mailAppFixture({
+    navigationType: "reload",
+    prepares: [preparedMailReply("op-after-refresh")]
+  });
+  await app.settle();
+
+  assert.equal(app.calls.session.length, 0);
+  assert.equal(app.calls.message.length, 0);
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session needed");
+  assert.equal(app.elements.get("continue-session").hidden, false);
+
+  await app.elements.get("continue-session").emit("click");
+  await app.settle();
+  assert.equal(app.calls.session.length, 1);
+  assert.deepEqual(app.calls.message, ["locator-1"]);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("a background-opened tab waits for foreground before creating a session or reading mail", async () => {
+  const app = mailAppFixture({
+    initialVisibility: "hidden",
+    prepares: [preparedMailReply("op-background-open")]
+  });
+  await app.settle();
+  assert.equal(app.elements.get("gate-title").textContent, "Mail tab is paused");
+  assert.equal(app.calls.session.length, 0);
+  assert.equal(app.calls.message.length, 0);
+
+  await app.setVisibility("visible");
+  await app.settle();
+  assert.equal(app.calls.session.length, 1);
+  assert.deepEqual(app.calls.message, ["locator-1"]);
+  assert.equal(app.calls.activity.length, 0);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("restored tab keeps its absolute deadline and foreground navigation does not create a session", async () => {
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-refresh",
+    from_choices: [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
+    from: { name: "Work", address: "work@example.invalid" }, to: [{ address: "reply@example.invalid" }],
+    cc: [], bcc: [], subject: "Re: Fixture", body_text: "Saved through refresh",
+    operation_id: "op-refresh", operation_status: "unknown", operation_attempted: true
+  });
+  const snapshot = {
+    status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-cached",
+    accounts: [{ account_id: "account-1", label: "Work" }],
+    idle_deadline: "2026-11-10T12:30:00Z", absolute_deadline: "2026-11-11T00:00:00Z"
+  };
+  const app = mailAppFixture({
+    navigationType: "reload", sessionSnapshot: snapshot, storedDraft,
+    statuses: [{ status: "not_submitted", retry_eligible: true }]
+  });
+  await app.settle();
+
+  assert.equal(app.calls.session.length, 0);
+  assert.equal(app.calls.activity.length, 1);
+  assert.equal(app.calls.activity[0].body && Object.keys(app.calls.activity[0].body).length, 0);
+  assert.equal(app.calls.message.length, 1);
+  assert.equal(app.elements.get("reply-body").value, "Saved through refresh");
+  const savedSession = JSON.parse(app.sessionStorageRecords.get("pimcamp-mail-session-v2"));
+  assert.equal(savedSession.absolute_deadline, snapshot.absolute_deadline);
+  assert.equal(savedSession.idle_deadline, "2026-11-10T12:30:00.000Z");
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("only foreground edits renew idle; status and visibility checks do not", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-activity", { bodyText: "Local body" })],
+    statuses: [
+      { status: "not_submitted", retry_eligible: true },
+      { status: "not_submitted", retry_eligible: true }
+    ]
+  });
+  await app.settle();
+  assert.equal(app.calls.activity.length, 0);
+
+  app.elements.get("reply-body").value = "Edited locally";
+  await app.elements.get("reply-body").emit("input");
+  await app.advance(500);
+  assert.equal(app.calls.activity.length, 1);
+  assert.deepEqual(app.calls.activity[0].body, {});
+  assert.equal(app.calls.submit.length, 0);
+
+  await app.setVisibility("hidden");
+  await app.setVisibility("visible");
+  await app.settle();
+  assert.equal(app.calls.activity.length, 1);
+  assert.equal(app.calls.message.length, 2);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("session expires at deadline equality, hiding content while retaining draft and operation", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-expiry", { bodyText: "Keep across expiry" })]
+  });
+  await app.settle();
+  const operationId = app.savedDraft.operation_id;
+  await app.advance(29 * 60 * 1000);
+  assert.equal(app.elements.get("mail-view").hidden, false);
+  assert.equal(app.calls.session.length, 1);
+
+  await app.advance(60 * 1000);
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session expired");
+  assert.equal(app.savedDraft.operation_id, operationId);
+  assert.equal(app.savedDraft.body_text, "Keep across expiry");
+  assert.equal(app.sessionStorageRecords.has("pimcamp-mail-session-v2"), false);
+  assert.equal(app.calls.activity.length, 0);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("an activity response cannot extend the absolute session deadline or authorize Send", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-absolute-cap")],
+    activities: [{ idle_deadline: "2026-11-10T12:45:00Z", absolute_deadline: "2026-11-11T00:01:00Z" }]
+  });
+  await app.settle();
+  const operationId = app.savedDraft.operation_id;
+
+  await app.elements.get("reply-form").emit("submit");
+  await app.settle();
+
+  assert.equal(app.calls.activity.length, 1);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.savedDraft.operation_id, operationId);
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session expired");
+  assert.equal(app.sessionStorageRecords.has("pimcamp-mail-session-v2"), false);
+});
+
+test("explicit logout invalidates the tab session while retaining local draft and operation", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-logout", { bodyText: "Preserve on logout" })]
+  });
+  await app.settle();
+  const operationId = app.savedDraft.operation_id;
+
+  await app.elements.get("logout-session").emit("click");
+  await app.settle();
+
+  assert.equal(app.calls.activity.length, 1);
+  assert.equal(app.calls.logout.length, 1);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session ended");
+  assert.equal(app.savedDraft.operation_id, operationId);
+  assert.equal(app.savedDraft.body_text, "Preserve on logout");
+  assert.equal(app.sessionStorageRecords.has("pimcamp-mail-session-v2"), false);
+});
+
+test("uncertain logout stays gated across reload and preserves the operation for explicit retry", async () => {
+  const networkError = new Error("logout response unavailable");
+  const first = mailAppFixture({
+    prepares: [preparedMailReply("op-logout-unknown", { bodyText: "Keep across uncertain logout" })],
+    logoutResponses: [networkError]
+  });
+  await first.settle();
+  const operationId = first.savedDraft.operation_id;
+
+  await first.elements.get("logout-session").emit("click");
+  await first.settle();
+
+  assert.equal(first.elements.get("mail-view").hidden, true);
+  assert.equal(first.elements.get("gate-title").textContent, "Logout not confirmed");
+  assert.equal(first.savedDraft.operation_id, operationId);
+  assert.equal(first.sessionStorageRecords.has("pimcamp-mail-session-v2"), true);
+  const pendingSnapshot = JSON.parse(first.sessionStorageRecords.get("pimcamp-mail-session-v2"));
+  assert.equal(pendingSnapshot.logout_pending, true);
+  assert.equal(pendingSnapshot.accounts.length, 1);
+
+  const reload = mailAppFixture({
+    navigationType: "reload",
+    sessionSnapshot: pendingSnapshot,
+    storedDraft: first.savedDraft
+  });
+  await reload.settle();
+
+  assert.equal(reload.calls.session.length, 0);
+  assert.equal(reload.calls.activity.length, 0);
+  assert.equal(reload.calls.message.length, 0);
+  assert.equal(reload.elements.get("mail-view").hidden, true);
+  assert.equal(reload.elements.get("gate-title").textContent, "Logout not confirmed");
+  assert.equal(reload.elements.get("retry-open").textContent, "Try logout again");
+
+  await reload.elements.get("retry-open").emit("click");
+  await reload.settle();
+
+  assert.equal(reload.calls.activity.length, 1);
+  assert.equal(reload.calls.logout.length, 1);
+  assert.equal(reload.calls.session.length, 0);
+  assert.equal(reload.calls.message.length, 0);
+  assert.equal(reload.savedDraft.operation_id, operationId);
+  assert.equal(reload.savedDraft.body_text, "Keep across uncertain logout");
+  assert.equal(reload.sessionStorageRecords.has("pimcamp-mail-session-v2"), false);
+  assert.equal(reload.elements.get("gate-title").textContent, "Mail session ended");
+});
+
+test("expired uncertain logout renewal retries session opening instead of repeating logout", async () => {
+  const first = mailAppFixture({
+    prepares: [preparedMailReply("op-logout-expiry", { bodyText: "Keep through expiry" })],
+    logoutResponses: [new Error("logout response unavailable")]
+  });
+  await first.settle();
+  await first.elements.get("logout-session").emit("click");
+  await first.settle();
+  const pendingSnapshot = JSON.parse(first.sessionStorageRecords.get("pimcamp-mail-session-v2"));
+
+  const reload = mailAppFixture({
+    navigationType: "reload",
+    sessionSnapshot: pendingSnapshot,
+    storedDraft: first.savedDraft,
+    sessionResponses: [new Error("temporary session service outage")]
+  });
+  await reload.settle();
+  await reload.advance(30 * 60 * 1000);
+  assert.equal(reload.elements.get("gate-title").textContent, "Mail session expired");
+
+  await reload.elements.get("continue-session").emit("click");
+  await reload.settle();
+  assert.equal(reload.calls.session.length, 1);
+  assert.equal(reload.calls.logout.length, 0);
+  assert.equal(reload.elements.get("gate-title").textContent, "Mail could not be reached");
+
+  await reload.elements.get("retry-open").emit("click");
+  await reload.settle();
+  assert.equal(reload.calls.session.length, 2);
+  assert.equal(reload.calls.logout.length, 0);
+  assert.deepEqual(reload.calls.message, ["locator-1"]);
+  assert.equal(reload.savedDraft.operation_id, "op-logout-expiry");
+  assert.equal(reload.calls.submit.length, 0);
+});
+
+test("403 permission denial stays an authorization error and does not offer session renewal", async () => {
+  const denied = Object.assign(new Error("fixture authorization denial"), { status: 403, code: "permission_denied" });
+  const app = mailAppFixture({ messageResponses: [denied] });
+  await app.settle();
+
+  assert.equal(app.elements.get("gate-title").textContent, "Message could not be opened");
+  assert.equal(app.elements.get("continue-session").hidden, true);
+  assert.equal(app.elements.get("retry-open").hidden, false);
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.calls.session.length, 1);
+});
+
+test("expired activity never submits and renewal checks the same operation before a later explicit send", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const payload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: choice.name, address: choice.address },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Reviewed reply"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-expired-send",
+    from_choices: [choice], ...payload, operation_id: "op-expired-send", operation_status: "unknown",
+    operation_attempted: true, operation_payload: payload
+  });
+  const expired = Object.assign(new Error("expired fixture session"), { status: 401, code: "session_expired" });
+  const app = mailAppFixture({
+    storedDraft,
+    activities: [expired],
+    statuses: [
+      { status: "not_submitted", retry_eligible: true },
+      { status: "not_submitted", retry_eligible: true }
+    ],
+    submissions: [{ status: "sent", operation_id: "op-expired-send" }]
+  });
+  await app.settle();
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+
+  await app.elements.get("reply-form").emit("submit");
+  await app.settle();
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.savedDraft.operation_id, "op-expired-send");
+  assert.equal(app.savedDraft.body_text, "Reviewed reply");
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session expired");
+
+  await app.elements.get("continue-session").emit("click");
+  await app.settle();
+  assert.deepEqual(app.calls.status.map(call => call.operationId), ["op-expired-send", "op-expired-send"]);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+
+  await app.elements.get("reply-form").emit("submit");
+  await app.settle();
+  assert.equal(app.calls.submit.length, 1);
+  assert.equal(app.calls.submit[0].operationId, "op-expired-send");
+  assert.equal(app.calls.activity.length, 2);
 });
 
 test("discard before an attempt deletes the draft and sends no mail", async () => {

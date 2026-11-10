@@ -15,6 +15,14 @@ Message content is shown as inert text with remote content off. The browser
 surface leaves every `pimcamp.v1` request envelope and operation behavior
 unchanged. Its backend integration and release acceptance remain pending.
 
+Mail sessions return idle and absolute deadlines. Foreground edits and protected
+user actions call `POST /mail/api/session/activity` with the current same-origin
+cookie and CSRF token; background status checks and visibility changes do not
+renew idle time. Sessions expire at 30 minutes idle or 12 hours absolute,
+whichever comes first. Human logout uses `POST /mail/api/session/logout`, hides
+private content, and keeps same-browser reply and send-operation records for
+later authorized recovery.
+
 A generic account setup UI is included in this development tree and its installer;
 it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
 and [integration requirements](docs/onboarding-integration.md). This setup UI
