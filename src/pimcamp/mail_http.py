@@ -60,7 +60,7 @@ class MailSessionStore:
         self._sessions[token] = session
         return token, session
 
-    def get(self, token: str) -> _Session | None:
+    def get(self, token: str, *, touch: bool = True) -> _Session | None:
         session = self._sessions.get(token)
         if session is None:
             return None
@@ -71,7 +71,8 @@ class MailSessionStore:
         ):
             self._sessions.pop(token, None)
             return None
-        session.last_seen = now
+        if touch:
+            session.last_seen = now
         return session
 
 
@@ -168,7 +169,7 @@ class MailHTTPApplication:
                     operation_id = str(uuid.UUID(operation_id))
                 except ValueError as exc:
                     raise invalid("The reply operation ID is invalid.") from exc
-                principal, accounts = self._browser_principal(headers)
+                principal, accounts = self._browser_principal(headers, touch=False)
                 state = State.open_read_only(self.config.state_path)
                 try:
                     result = self._service(state, principal, accounts).send_status(
@@ -286,10 +287,12 @@ class MailHTTPApplication:
             raise PimcampError("backend_unavailable", "The mail asset is unavailable.") from exc
         return HTTPResponse(200, self._base_headers(content_type), asset)
 
-    def _browser_principal(self, headers: dict[str, str]) -> tuple[str, frozenset[str]]:
+    def _browser_principal(
+        self, headers: dict[str, str], *, touch: bool = True
+    ) -> tuple[str, frozenset[str]]:
         principal = self._verified_principal(headers)
         token = _cookie_value(headers.get("cookie", ""))
-        session = self.sessions.get(token) if token else None
+        session = self.sessions.get(token, touch=touch) if token else None
         if session is None or session.principal_id != principal:
             raise PimcampError("permission_denied", "An authenticated mail session is required.")
         return principal, self._authorized_accounts(principal)

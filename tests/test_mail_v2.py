@@ -710,6 +710,43 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(403, response.status)
         self.assertEqual(0, len(self.calls_for("read")))
 
+    def test_send_status_poll_does_not_renew_the_idle_mail_session(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        now = [1_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "Idle session fixture"}),
+        )
+        self.assertEqual(200, prepared.status)
+        operation_id = loads_one(prepared.body)["operation_id"]
+        reads_before_expiry = len(self.calls_for("read"))
+
+        now[0] += 25
+        status = app.handle(
+            "GET",
+            f"/mail/api/v2/accounts/account-a/send-status/{operation_id}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertEqual(200, status.status)
+        self.assertEqual("not_submitted", loads_one(status.body)["status"])
+
+        now[0] += 6
+        expired = app.handle(
+            "GET",
+            f"/mail/api/v2/messages/{locator}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertNotEqual(200, expired.status)
+        self.assertEqual(reads_before_expiry, len(self.calls_for("read")))
+
     def test_concurrent_explicit_submits_share_one_transport_claim(self) -> None:
         from pimcamp.jsonio import loads_one
 
