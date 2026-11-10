@@ -216,10 +216,15 @@ pins the lower backend to IMAP and uses Himalaya's raw IMAP command interface.
 It also needs `identity_capability: "native"` and a configured account `address`.
 It requires the raw/stdin interface inspected at Himalaya source revision
 `ca88bee08ad2e92127b46dc6200d1e8201885156`; other versions need verification.
-Listing fetches current headers, flags and native X-GUID together, using
-`EXAMINE` and `BODY.PEEK[HEADER]`. Resolution uses `LIST "" "*"` and exact
-`UID SEARCH X-GUID` across every returned selectable folder, including
-unsubscribed folders, then verifies each match. The configured inbox and returned
+Listing uses structured `imap fetch --envelope --flags` summaries, with batched
+X-GUID and UIDVALIDITY checks before and after that call. A changed generation or
+GUID refuses the page; no stale UID joins an old summary to a new identity.
+There are at most four lower calls per page, independent of page size. Resolution
+uses `LIST "" "*"`, then batches `EXAMINE`/`UID SEARCH X-GUID` across all returned
+selectable folders (including unsubscribed folders), and verifies the matches in
+one further batch. It uses at most three lower calls, independent of folder and
+match counts. Tagged completion boundaries attribute results to their folders;
+failed, missing or reordered boundaries refuse the lookup. The configured inbox and returned
 folder names are IMAP wire names (ASCII or modified UTF-7). No local snapshot,
 UID or Message-ID matching substitutes for X-GUID. Multiple occurrences refuse
 as ambiguous; zero matches report missing; incomplete/failed searches remain
@@ -232,10 +237,14 @@ account; folders hidden by provider permissions cannot be established locally.
 Folder enumeration/search is not an atomic provider snapshot; a concurrent move
 can produce a recoverable missing/conflict result. A provider that changes GUIDs
 on rebuild cannot be repaired by this adapter. Unsupported or incomplete raw
-responses fail closed. The lower JSON transport must preserve IMAP literal byte
-lengths; non-UTF-8 raw data that it rewrites is not proved supported. Real lower
-captures, provider move/rebuild/duplicate behavior and all-account browser
-acceptance remain required. No live mail or configuration changes are implied.
+responses fail closed. The pinned lower raw transport converts invalid UTF-8 to
+replacement characters, which breaks raw body literal byte lengths: opening such
+a message returns unavailable. Listing avoids raw header/body literals and uses
+structured summaries, so those bytes do not block other messages or pagination.
+Some summary text may contain the lower decoder's replacement characters. This
+contains the failure; it does not recover the original body bytes. Real lower
+captures, batch behavior, latency, provider move/rebuild/duplicate behavior and
+all-account browser acceptance remain required. No live mail or configuration changes are implied.
 
 Locators bind to the stable local account ID plus configured `address`, separately
 from editable reply From choices. Changing that address under an ID makes old

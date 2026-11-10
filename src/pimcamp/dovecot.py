@@ -7,6 +7,7 @@ parsing and hosted-provider continuity still require real lower-adapter evidence
 
 import json
 import re
+from email.utils import getaddresses
 from typing import Any
 
 from .errors import PimcampError, unavailable
@@ -70,17 +71,27 @@ class DovecotIdentity:
         uids = sorted(self.search(folder, None, deadline), key=int, reverse=True)
         start = (page - 1) * limit
         selected = uids[start:start + limit]
+        if not selected:
+            return [], False
+        # Structured envelopes decode each field without exposing raw literal
+        # framing. Bracket that separate call with native identity/generation
+        # checks so a reused UID cannot bind an old summary to different mail.
+        before = self.fetch_many({folder: selected}, None, deadline)[folder]
+        summaries = self.envelopes(folder, selected, deadline)
+        after = self.fetch_many({folder: selected}, None, deadline)[folder]
+        if before["generation"] != after["generation"]:
+            raise PimcampError("conflict", "The mailbox generation changed during listing.")
         records = []
         for uid in selected:
-            # Headers and GUID belong to the same FETCH, even if the earlier
-            # search's UID has disappeared or been reused after a rebuild.
-            item = self.fetch(folder, uid, "header", deadline)
-            if item is None:
+            first = before["messages"].get(uid)
+            last = after["messages"].get(uid)
+            if first is None or last is None or uid not in summaries:
                 continue
-            guid = item["guid"]
+            if first["guid"] != last["guid"]:
+                raise PimcampError("conflict", "The message changed during listing.")
+            guid = last["guid"]
             records.append({
-                "adapter_id": _handle(folder, uid, guid),
-                "headers": item["body"], "unread": item["unread"],
+                "adapter_id": _handle(folder, uid, guid), **summaries[uid],
                 "identity_evidence": {
                     "namespace": NAMESPACE, "key": guid, "continuity": "native",
                     "backend": "dovecot", "folder": folder, "generation": None,
@@ -100,9 +111,11 @@ class DovecotIdentity:
         matches = []
         # LIST, not LSUB: unsubscribed folders also count. Do not suppress a
         # failed EXAMINE/SEARCH or pick one occurrence of a copied GUID.
-        for folder in self.folders(deadline):
-            for uid in self.search(folder, guid, deadline):
-                item = self.fetch(folder, uid, None, deadline)
+        candidates = self.search_many(self.folders(deadline), guid, deadline)
+        current = self.fetch_many({folder: uids for folder, uids in candidates.items() if uids}, None, deadline)
+        for folder, uids in candidates.items():
+            for uid in uids:
+                item = current[folder]["messages"].get(uid)
                 if item is None or item["guid"] != guid:
                     raise PimcampError("conflict", "The message changed during identity lookup.")
                 matches.append({"adapter_id": _handle(folder, uid, guid)})
@@ -136,69 +149,118 @@ class DovecotIdentity:
         return folders
 
     def search(self, folder: str, guid: str | None, deadline: float) -> list[str]:
+        return self.search_many([folder], guid, deadline)[folder]
+
+    def search_many(self, folders: list[str], guid: str | None, deadline: float):
         query = "ALL" if guid is None else "X-GUID " + _quoted(guid)
-        rows = self._commands(["EXAMINE " + _quoted(folder), "UID SEARCH " + query], deadline)
-        searches = [row for row in rows if len(row) >= 2 and row[1] == b"SEARCH"]
-        if len(searches) != 1:
-            raise unavailable("The IMAP search was incomplete.")
-        uids = [_uid(_text(value)) for value in searches[0][2:]]
-        if len(uids) != len(set(uids)):
-            raise unavailable("The IMAP search contains duplicate UIDs.")
-        return uids
+        commands = []
+        for folder in folders:
+            commands.extend(["EXAMINE " + _quoted(folder), "UID SEARCH " + query])
+        groups = self._command_groups(commands, deadline)
+        result = {}
+        for index, folder in enumerate(folders):
+            searches = [row for row in groups[2 * index + 1] if len(row) >= 2 and row[1] == b"SEARCH"]
+            if len(searches) != 1:
+                raise unavailable("The IMAP search was incomplete.")
+            uids = [_uid(_text(value)) for value in searches[0][2:]]
+            if len(uids) != len(set(uids)):
+                raise unavailable("The IMAP search contains duplicate UIDs.")
+            result[folder] = uids
+        return result
 
     def fetch(self, folder: str, uid: str, body: str | None, deadline: float):
+        return self.fetch_many({folder: [uid]}, body, deadline)[folder]["messages"].get(uid)
+
+    def fetch_many(self, requests: dict[str, list[str]], body: str | None, deadline: float):
+        if not requests:
+            return {}
         fields = "UID X-GUID"
-        if body == "header":
-            fields += " FLAGS BODY.PEEK[HEADER]"
-        elif body == "body":
+        if body == "body":
             fields += " BODY.PEEK[]"
-        rows = self._commands([
-            "EXAMINE " + _quoted(folder), "UID FETCH " + _uid(uid) + " (" + fields + ")",
-        ], deadline)
-        found = []
-        for row in rows:
-            if len(row) < 3 or row[2] != b"FETCH":
-                continue
-            if len(row) != 4 or not isinstance(row[3], list) or len(row[3]) % 2:
-                raise unavailable("The IMAP fetch is invalid.")
-            pairs = row[3]
-            if any(not isinstance(key, bytes) for key in pairs[::2]):
-                raise unavailable("The IMAP fetch attributes are invalid.")
-            attrs = dict(zip(pairs[::2], pairs[1::2]))
-            if len(attrs) * 2 != len(pairs):
-                raise unavailable("The IMAP fetch has duplicate attributes.")
-            # Ignore unsolicited flag-only FETCH updates, never an alternate UID.
-            if b"X-GUID" not in attrs and b"BODY[]" not in attrs and b"BODY[HEADER]" not in attrs:
-                if b"FLAGS" in attrs and set(attrs).issubset({b"UID", b"FLAGS"}):
-                    continue
-                raise unavailable("The IMAP fetch omitted native identity.")
-            if _uid(_text(attrs.get(b"UID"))) != uid:
-                raise unavailable("The IMAP fetch returned a different UID.")
-            guid = _text(attrs.get(b"X-GUID"))
-            _quoted(guid)
-            raw = None
-            unread = False
-            if body is not None:
-                raw = attrs.get(b"BODY[HEADER]" if body == "header" else b"BODY[]")
-                if not isinstance(raw, bytes):
-                    raise unavailable("The IMAP fetch omitted message data.")
-            if body == "header":
-                flags = attrs.get(b"FLAGS")
-                if not isinstance(flags, list):
-                    raise unavailable("The IMAP fetch omitted message flags.")
-                unread = "\\seen" not in [_text(flag).lower() for flag in flags]
-            found.append({"guid": guid, "body": raw, "unread": unread})
-        if len(found) > 1:
-            raise unavailable("The IMAP fetch returned multiple messages.")
-        return found[0] if found else None
+        commands = []
+        for folder, uids in requests.items():
+            if not uids:
+                raise unavailable("An empty IMAP fetch was requested.")
+            commands.extend(["EXAMINE " + _quoted(folder),
+                             "UID FETCH " + ",".join(_uid(uid) for uid in uids) + " (" + fields + ")"])
+        groups = self._command_groups(commands, deadline)
+        result = {}
+        for index, (folder, uids) in enumerate(requests.items()):
+            generations = [row[2] for row in groups[2 * index]
+                           if len(row) == 3 and row[1] == b"UIDVALIDITY"]
+            if len(generations) != 1:
+                raise unavailable("The IMAP mailbox generation is missing.")
+            result[folder] = {"generation": _uid(_text(generations[0])),
+                              "messages": _fetch_records(groups[2 * index + 1], uids, body)}
+        return result
+
+    def envelopes(self, folder: str, uids: list[str], deadline: float):
+        # Himalaya ca88bee src/imap/fetch.rs serializes structured fields after
+        # parsing wire literals. Lossy field text cannot shift IMAP framing here.
+        output = self.run_json(["imap", "fetch", ",".join(_uid(uid) for uid in uids),
+                                "--mailbox", folder, "--envelope", "--flags"], None, deadline)
+        if not isinstance(output, dict) or set(output) != {"messages"} or not isinstance(output["messages"], list):
+            raise unavailable("Himalaya returned invalid IMAP envelope results.")
+        result = {}
+        for item in output["messages"]:
+            if not isinstance(item, dict) or type(item.get("uid")) is not int:
+                raise unavailable("Himalaya returned invalid IMAP envelope metadata.")
+            uid = _uid(str(item["uid"]))
+            envelope, flags = item.get("envelope"), item.get("flags")
+            if uid not in uids or uid in result or not isinstance(envelope, dict):
+                raise unavailable("Himalaya returned unexpected IMAP envelope identity.")
+            if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+                raise unavailable("Himalaya returned invalid IMAP envelope flags.")
+            sender, subject, date = envelope.get("from"), envelope.get("subject"), envelope.get("date")
+            if (not isinstance(sender, list) or any(not isinstance(value, str) for value in sender)
+                    or subject is not None and not isinstance(subject, str)
+                    or date is not None and not isinstance(date, str)):
+                raise unavailable("Himalaya returned invalid IMAP envelope fields.")
+            result[uid] = {"from": [{"name": name or None, "address": address}
+                                    for name, address in getaddresses(sender) if address],
+                           "subject": subject or "", "received_at": date,
+                           "unread": "\\seen" not in [flag.lower() for flag in flags]}
+        return result
 
     def _commands(self, commands: list[str], deadline: float) -> list[list]:
+        return [row for group in self._command_groups(commands, deadline) for row in group]
+
+    def _command_groups(self, commands: list[str], deadline: float) -> list[list[list]]:
         tags = [f"pc{i}" for i in range(len(commands))]
         raw = "".join(f"{tag} {command}\r\n" for tag, command in zip(tags, commands))
         output = self.run_json(["imap", "raw"], raw.encode("utf-8"), deadline)
         if not isinstance(output, dict) or set(output) != {"message"} or not isinstance(output["message"], str):
             raise unavailable("Himalaya returned invalid raw IMAP output.")
-        return parse_response(output["message"].encode("utf-8"), tags)
+        return parse_response(output["message"].encode("utf-8"), tags, grouped=True)
+
+
+def _fetch_records(rows: list[list], uids: list[str], body: str | None):
+    found = {}
+    for row in rows:
+        if len(row) < 3 or row[2] != b"FETCH":
+            continue
+        if len(row) != 4 or not isinstance(row[3], list) or len(row[3]) % 2:
+            raise unavailable("The IMAP fetch is invalid.")
+        pairs = row[3]
+        if any(not isinstance(key, bytes) for key in pairs[::2]):
+            raise unavailable("The IMAP fetch attributes are invalid.")
+        attrs = dict(zip(pairs[::2], pairs[1::2]))
+        if len(attrs) * 2 != len(pairs):
+            raise unavailable("The IMAP fetch has duplicate attributes.")
+        if b"X-GUID" not in attrs and b"BODY[]" not in attrs:
+            if b"FLAGS" in attrs and set(attrs).issubset({b"UID", b"FLAGS"}):
+                continue
+            raise unavailable("The IMAP fetch omitted native identity.")
+        uid = _uid(_text(attrs.get(b"UID")))
+        if uid not in uids or uid in found:
+            raise unavailable("The IMAP fetch returned unexpected UIDs.")
+        guid = _text(attrs.get(b"X-GUID"))
+        _quoted(guid)
+        raw = attrs.get(b"BODY[]") if body is not None else None
+        if body is not None and not isinstance(raw, bytes):
+            raise unavailable("The IMAP fetch omitted message data.")
+        found[uid] = {"guid": guid, "body": raw}
+    return found
 
 
 class _Reader:
@@ -260,11 +322,12 @@ class _Reader:
         return None if value.upper() == b"NIL" else value
 
 
-def parse_response(raw: bytes, tags: list[str]) -> list[list]:
+def parse_response(raw: bytes, tags: list[str], *, grouped: bool = False) -> list:
     """Check every completion (exit zero alone is insufficient for raw IMAP)."""
     reader = _Reader(raw)
     pending = {tag.encode("ascii") for tag in tags}
     rows = []
+    groups = []
     try:
         while reader.pos < len(raw):
             end = raw.index(b"\r\n", reader.pos)
@@ -273,6 +336,12 @@ def parse_response(raw: bytes, tags: list[str]) -> list[list]:
             if words[0] in pending:
                 if len(words) < 2 or words[1].upper() != b"OK":
                     raise ValueError()
+                # Commands depend on the selected folder. Only ordered tagged
+                # boundaries establish attribution; never guess on reordering.
+                if grouped and words[0] != tags[len(groups)].encode("ascii"):
+                    raise ValueError()
+                groups.append(rows)
+                rows = []
                 pending.remove(words[0])
                 reader.pos = end + 2
                 continue
@@ -281,6 +350,9 @@ def parse_response(raw: bytes, tags: list[str]) -> list[list]:
             if words[1].upper() in (b"BYE", b"NO", b"BAD"):
                 raise ValueError()
             if words[1].upper() in (b"OK", b"PREAUTH"):
+                generation = re.fullmatch(rb"\* OK \[UIDVALIDITY ([1-9][0-9]*)\].*", line, re.IGNORECASE)
+                if generation:
+                    rows.append([b"*", b"UIDVALIDITY", generation[1]])
                 reader.pos = end + 2
                 continue
             row = []
@@ -300,6 +372,8 @@ def parse_response(raw: bytes, tags: list[str]) -> list[list]:
             rows.append(row)
         if pending:
             raise ValueError()
-        return rows
+        if rows:
+            raise ValueError()
+        return groups if grouped else [row for group in groups for row in group]
     except (ValueError, TypeError, AttributeError, IndexError, RecursionError) as exc:
         raise unavailable("The IMAP response was invalid or incomplete.") from exc

@@ -82,14 +82,7 @@ class HimalayaOperationsAdapter:
         records, more = DovecotIdentity(self._run_json).list_page(
             self.config.inbox, _page(payload.get("cursor")), payload["limit"], deadline
         )
-        messages = []
-        for record in records:
-            headers = self._parse_message(record["headers"])
-            messages.append({
-                "adapter_id": record["adapter_id"], "from": headers["from"],
-                "subject": headers["subject"], "received_at": headers["sent_at"],
-                "unread": record["unread"], "identity_evidence": record["identity_evidence"],
-            })
+        messages = [{**record, "received_at": _iso_time(record["received_at"])} for record in records]
         return {"messages": messages, "next_cursor":
                 f"page:{_page(payload.get('cursor')) + 1}" if more else None}
 
