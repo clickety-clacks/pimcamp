@@ -5,8 +5,15 @@ agents, and scripts. It gives these clients one structured seam instead of
 making them depend on a specific command-line tool, provider, or email
 protocol.
 
-Pimcamp is not an email app. It does not provide a mailbox user interface, a
-sync engine, a search index, or a general email automation platform.
+Pimcamp is not a full mailbox client. It does not provide mailbox listing,
+search, synchronization, or general email automation.
+
+This checkout adds a focused, authenticated v2 browser reader and plain-text
+reply composer for account-scoped message links. It uses separate session,
+message-read, reply-prepare, explicit-submit, and read-only send-status routes.
+Message content is shown as inert text with remote content off. The browser
+surface leaves every `pimcamp.v1` request envelope and operation behavior
+unchanged. Its backend integration and release acceptance remain pending.
 
 A generic account setup UI is included in this development tree and its installer;
 it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
@@ -116,7 +123,7 @@ capabilities. It is not part of the MVP and does not add a capability.
 
 ## MVP capabilities
 
-The public MVP surface contains exactly seven capabilities:
+The public `pimcamp.v1` operation surface contains seven capabilities:
 
 1. `list` — list current message summaries.
 2. `read` — retrieve the current form of a selected message.
