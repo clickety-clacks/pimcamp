@@ -273,6 +273,8 @@ class HimalayaOperationsAdapter:
         ]
         if self.config.config_paths:
             command.extend(("--config", ":".join(self.config.config_paths)))
+        if self.config.backend is not None:
+            command.extend(("--backend", self.config.backend))
         return command
 
 

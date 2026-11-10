@@ -197,6 +197,13 @@ resolution, so it returns `cannot_link` until such an adapter capability is
 provided. Fixture-port tests establish the contract shape, not provider
 continuity.
 
+A Himalaya adapter inside `mail_accounts` may explicitly set `"backend": "gmail"`
+to pin its reads and lists to the native Gmail backend without Auto/IMAP fallback.
+The v1 top-level adapter schema is unchanged. This selector alone does not prove
+account identity or enable stable links: the concrete Himalaya resolver remains
+unsupported until an authoritative account binding is available. Native private-
+port fixtures are application evidence, not real Gmail account acceptance.
+
 For a browser reply, the operations adapter receives the selected `sender`
 alongside the source-derived threading context and edited composition. It must
 use that address for both the message From header and transport envelope.

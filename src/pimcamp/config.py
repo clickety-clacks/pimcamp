@@ -37,6 +37,7 @@ class HimalayaConfig:
     junk_mailbox: str | None
     sender: dict[str, str | None]
     raw: dict[str, Any]
+    backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,7 +199,7 @@ def _mail_accounts(value: Any) -> dict[str, MailAccountConfig]:
         label = item["label"]
         if not isinstance(label, str) or not label:
             raise unavailable("Pimcamp mail-account label is invalid.")
-        operations = _adapter(item["operations_adapter"], "operations")
+        operations = _adapter(item["operations_adapter"], "operations", mail_account=True)
         primary_from = _mail_address(item["primary_from"], optional=True)
         selectable = item["selectable_from"]
         if not isinstance(selectable, list):
@@ -285,10 +286,10 @@ def _mail_origin(value: Any) -> str | None:
 
 
 def _adapter(
-    value: Any, expected: str
+    value: Any, expected: str, *, mail_account: bool = False
 ) -> AdapterConfig | HimalayaConfig | MiradorConfig:
     if expected == "operations" and isinstance(value, dict) and value.get("kind") == "himalaya":
-        return _himalaya(value)
+        return _himalaya(value, mail_account=mail_account)
     if expected == "observation" and isinstance(value, dict) and value.get("kind") == "mirador":
         return _mirador(value)
     if not isinstance(value, dict) or value.get("kind") != "command" or set(value) != {
@@ -336,8 +337,8 @@ def _mirador(value: dict[str, Any]) -> MiradorConfig:
     )
 
 
-def _himalaya(value: dict[str, Any]) -> HimalayaConfig:
-    if set(value) != {
+def _himalaya(value: dict[str, Any], *, mail_account: bool = False) -> HimalayaConfig:
+    required = {
         "kind",
         "executable",
         "account",
@@ -345,8 +346,15 @@ def _himalaya(value: dict[str, Any]) -> HimalayaConfig:
         "inbox",
         "junk_mailbox",
         "from",
-    }:
+    }
+    allowed = required | ({"backend"} if mail_account else set())
+    if not required.issubset(value) or not set(value).issubset(allowed):
         raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
+    # Only the explicitly selected Gmail path has source-supported native IDs.
+    # Selecting it does not establish account identity or enable durable links.
+    backend = value.get("backend")
+    if "backend" in value and backend != "gmail":
+        raise unavailable("Pimcamp native mail backend is unsupported.")
     executable = value["executable"]
     account = value["account"]
     config_paths = value["config_paths"]
@@ -358,6 +366,8 @@ def _himalaya(value: dict[str, Any]) -> HimalayaConfig:
         for item in (executable, account, inbox)
     ):
         raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
+    if backend == "gmail" and account == "default":
+        raise unavailable("Pimcamp native mail requires an explicit account selector.")
     if not isinstance(config_paths, list) or any(
         not isinstance(path, str) or not path for path in config_paths
     ):
@@ -388,6 +398,7 @@ def _himalaya(value: dict[str, Any]) -> HimalayaConfig:
         junk_mailbox=junk,
         sender={"name": sender["name"], "address": sender["address"]},
         raw=value,
+        backend=backend,
     )
 
 
