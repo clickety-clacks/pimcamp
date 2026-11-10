@@ -74,27 +74,36 @@ class MailV2Case(unittest.TestCase):
         self.write_adapter_state([message("lower-id-1")])
         self.write_config()
 
-    def write_config(self, *, capability: str = "mapped", mail_origin: str | None = ORIGIN) -> None:
+    def write_config(
+        self,
+        *,
+        capability: str = "mapped",
+        mail_origin: str | None = ORIGIN,
+        selectable_from: list[dict[str, object]] | None = None,
+        alias_discovery_state: str = "supported-complete",
+    ) -> None:
         digest = hashlib.sha256(self.credential.encode()).hexdigest()
         command = [sys.executable, str(PORT_ADAPTER), str(self.adapter_state), str(self.calls)]
+        if selectable_from is None:
+            selectable_from = [
+                {
+                    "from": {"name": "Owner", "address": "owner@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "valid",
+                },
+                {
+                    "from": {"name": "Alias", "address": "alias@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "valid",
+                },
+            ]
         accounts = {
             account_id: {
                 "label": f"Fixture {account_id}",
                 "operations_adapter": {"kind": "command", "command": command},
                 "primary_from": {"name": "Owner", "address": "owner@example.test"},
-                "selectable_from": [
-                    {
-                        "from": {"name": "Owner", "address": "owner@example.test"},
-                        "provenance": "synthetic-fixture-authority",
-                        "validity": "valid",
-                    },
-                    {
-                        "from": {"name": "Alias", "address": "alias@example.test"},
-                        "provenance": "synthetic-fixture-authority",
-                        "validity": "valid",
-                    },
-                ],
-                "alias_discovery_state": "supported-complete",
+                "selectable_from": selectable_from,
+                "alias_discovery_state": alias_discovery_state,
                 "identity_capability": capability,
             }
             for account_id in self.account_ids
@@ -455,6 +464,153 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual("sent", loads_one(status.body)["status"])
         self.assertFalse(loads_one(status.body)["retry_eligible"])
         self.assertEqual(before_status, self.state_path.read_bytes())
+
+    def test_primary_only_account_preselects_its_single_valid_from(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        sender = {
+            "name": "Owner",
+            "address": "owner@example.test",
+            "provenance": "synthetic-fixture-authority",
+            "validity": "valid",
+        }
+        self.write_config(
+            selectable_from=[
+                {
+                    "from": {"name": "Owner", "address": "owner@example.test"},
+                    "provenance": sender["provenance"],
+                    "validity": sender["validity"],
+                }
+            ]
+        )
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "Primary only"}),
+        )
+        self.assertEqual(200, prepared.status)
+        reply = loads_one(prepared.body)["reply"]
+        self.assertEqual([sender], reply["from_choices"])
+        self.assertEqual(sender, reply["selected_from"])
+        self.assertEqual(0, len(self.calls_for("send")))
+
+    def test_unknown_alias_discovery_excludes_unverified_from_choices(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        self.write_config(
+            selectable_from=[
+                {
+                    "from": {"name": "Owner", "address": "owner@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "valid",
+                },
+                {
+                    "from": {"name": "Possible", "address": "possible@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "unknown",
+                },
+                {
+                    "from": {"name": "Withdrawn", "address": "withdrawn@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "invalid",
+                },
+            ],
+            alias_discovery_state="unknown",
+        )
+        info = self.invoke("account_info", {"account_id": "account-a"})["result"]
+        self.assertEqual("unknown", info["alias_discovery_state"])
+        self.assertEqual(
+            ["owner@example.test"],
+            [item["address"] for item in info["selectable_from"]],
+        )
+
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "Known authority only"}),
+        )
+        self.assertEqual(200, prepared.status)
+        reply = loads_one(prepared.body)["reply"]
+        self.assertEqual(
+            ["owner@example.test"],
+            [item["address"] for item in reply["from_choices"]],
+        )
+        self.assertEqual("owner@example.test", reply["selected_from"]["address"])
+
+    def test_withdrawn_from_after_prepare_is_denied_without_substitution(self) -> None:
+        from pimcamp.config import load
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "Review this sender"}),
+        )
+        self.assertEqual(200, prepared.status)
+        draft = loads_one(prepared.body)
+        alias = {"name": "Alias", "address": "alias@example.test"}
+        self.assertIn(
+            alias["address"],
+            [item["address"] for item in draft["reply"]["from_choices"]],
+        )
+
+        self.write_config(
+            selectable_from=[
+                {
+                    "from": {"name": "Owner", "address": "owner@example.test"},
+                    "provenance": "synthetic-fixture-authority",
+                    "validity": "valid",
+                }
+            ]
+        )
+        app.config = load(self.config_path)
+        submit = {
+            "account_id": "account-a",
+            "locator": locator,
+            "from": alias,
+            "to": draft["reply"]["to"],
+            "cc": [],
+            "bcc": [],
+            "subject": draft["reply"]["subject"],
+            "body_text": draft["reply"]["body_text"],
+        }
+        rejected = app.handle(
+            "POST",
+            f"/mail/api/v2/replies/{draft['operation_id']}/submit",
+            headers,
+            json.dumps(submit),
+        )
+        self.assertEqual(403, rejected.status)
+        self.assertEqual("permission_denied", loads_one(rejected.body)["code"])
+        self.assertEqual(0, len(self.calls_for("send")))
+
+        status = app.handle(
+            "GET",
+            f"/mail/api/v2/accounts/account-a/send-status/{draft['operation_id']}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertEqual("not_submitted", loads_one(status.body)["status"])
+        self.assertTrue(loads_one(status.body)["retry_eligible"])
+        self.assertEqual(0, len(self.calls_for("send")))
 
     def test_status_keeps_expired_unbegun_claim_pending_and_nonretryable(self) -> None:
         from pimcamp.jsonio import loads_one
