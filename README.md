@@ -276,18 +276,38 @@ python3 -m unittest tests.test_live_adapters -v
 
 The live journey mutates the configured test account. A private runner must set
 the non-secret controls `PIMCAMP_LIVE_ENABLE=1`, `PIMCAMP_LIVE_CONFIG`,
-`PIMCAMP_LIVE_RECIPIENT`, `PIMCAMP_LIVE_HIMALAYA_VERSION`, and
-`PIMCAMP_LIVE_MIRADOR_VERSION`. Run it in an interactive terminal: the test
-requests the Pimcamp client credential with hidden input after checking the
-configuration and tool versions. Do not set `PIMCAMP_LIVE_CREDENTIAL`; the test
-removes that obsolete variable before starting child processes. It passes the
-credential only in the public request on Pimcamp's stdin, never in argv,
-environment, or test failure output. If hidden terminal input is unavailable,
-the live test skips without reading a credential.
+`PIMCAMP_LIVE_RECIPIENT`, `PIMCAMP_LIVE_HIMALAYA_VERSION`,
+`PIMCAMP_LIVE_MIRADOR_VERSION`, and `PIMCAMP_LIVE_EVIDENCE_FILE`. Set the
+evidence control to an absolute path for a new file outside the repository, in
+an existing directory accessible only to its owner. The runner writes a private
+JSON Lines record with redacted
+command/output captures from the real lower tools, their digests and versions,
+observed call counts, and the content-free start/event/query order. Addresses,
+message identifiers, subjects, bodies, credentials, and local paths are removed
+before capture data is written. The runner does not overwrite an existing
+evidence file. Each configured tool version must match an exact version token
+printed by that tool; the record includes the observed token and output digest.
 
-The recipient must automatically reply with the generated unique token. The
-test proceeds only after it finds and reads that matching reply, then sends a
-reply and files the matching message as junk before confirming it is gone.
+Run the journey in an interactive terminal: the test requests the Pimcamp
+client credential with hidden input after checking the configuration, that the
+source is integrated on main, the evidence destination, and tool versions. Do
+not set `PIMCAMP_LIVE_CREDENTIAL`; the test removes that obsolete variable before
+starting child processes. It passes the credential only in the public request
+on Pimcamp's stdin, never in argv, environment, or test failure output. If
+hidden terminal input is unavailable, the live test skips without reading a
+credential.
+
+By default, the recipient must automatically reply with the generated unique
+token. The test proceeds only after it finds and reads that matching reply,
+then sends a reply and files the matching message as junk before confirming it
+is gone. For a release whose reviewed acceptance amendment permits a consenting
+human return, `PIMCAMP_LIVE_HUMAN_RETURN=1` opts into checking that the
+configured recipient differs from the selected account's sender and that the
+token-bearing return came from that recipient. The responder and usable route
+must be arranged before the journey. The default automatic-reply expectation
+remains in effect when this option is unset. A human-return record covers only
+that journey; it does not prove automatic responder behavior or unattended
+repeatability.
 
 An explicit local skip is honest but is not release evidence. Release evidence
 requires the real journey to pass, real redacted captures, exact tool versions,
