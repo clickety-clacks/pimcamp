@@ -70,7 +70,7 @@ def main() -> int:
         matches = [
             {"adapter_id": message["adapter_id"]}
             for message in state["messages"]
-            if message.get("identity_evidence") == evidence
+            if identity_matches(message.get("identity_evidence"), evidence)
         ]
         return output({"ok": {"matches": matches}})
     if operation == "read":
@@ -97,6 +97,12 @@ def main() -> int:
             return output({"ok": {"status": "sent"}})
         if selected == "lost_response":
             return 0
+        if selected == "accepted_then_timeout":
+            # Controlled fixture transport acceptance is recorded before its
+            # reply stalls; the application cannot infer this private fact.
+            state["accepted_submissions"] = state.get("accepted_submissions", 0) + 1
+            state_path.write_text(json.dumps(state))
+            hang()
         if selected == "hang":
             hang()
         if selected in {"pause_success", "crash_pause"}:
@@ -121,6 +127,16 @@ def main() -> int:
         state_path.write_text(json.dumps(state))
         return output({"ok": {"filed": True}})
     return output({"error": {"code": "unsupported"}})
+
+
+def identity_matches(current: object, issued: dict) -> bool:
+    if isinstance(current, dict) and current.get("continuity") == issued.get("continuity") == "native":
+        # Fixture-owned native identity survives label changes. All other
+        # identity context, including the fixture account incarnation, must match.
+        return {k: v for k, v in current.items() if k != "folder"} == {
+            k: v for k, v in issued.items() if k != "folder"
+        }
+    return current == issued
 
 
 def output(value: object) -> int:

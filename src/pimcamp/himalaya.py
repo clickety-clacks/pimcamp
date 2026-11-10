@@ -23,6 +23,7 @@ from .config import HimalayaConfig
 from .diagnostics import emit
 from .errors import NotSubmittedError, PimcampError, unavailable
 from .jsonio import loads_one
+from .identity import validate_identity_evidence
 
 
 _MESSAGE_ID = re.compile(r"<[^<>\s]+>")
@@ -43,7 +44,18 @@ class HimalayaOperationsAdapter:
         mutation: bool = False,
     ) -> Any:
         if operation == "list":
-            return self._list(payload, deadline)
+            result = self._list(payload, deadline)
+            if payload.get("include_identity_evidence") and self.config.backend == "gmail":
+                result = {**result, "messages": [
+                    {**item, "identity_evidence": {
+                        "namespace": "gmail-message-v1", "key": item["adapter_id"],
+                        "continuity": "native", "backend": "gmail",
+                        "folder": self.config.inbox, "generation": None,
+                    }} for item in result["messages"]
+                ]}
+            return result
+        if operation == "resolve_identity":
+            return self._resolve_identity(payload, deadline)
         if operation == "read":
             return self._read(payload, deadline)
         if operation == "send":
@@ -58,6 +70,31 @@ class HimalayaOperationsAdapter:
         if operation == "move_to_junk":
             return self._move_to_junk(payload, deadline)
         raise PimcampError("unsupported", "The Himalaya operation is unsupported.")
+
+    def _resolve_identity(self, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        if self.config.backend != "gmail":
+            raise PimcampError("unsupported", "Stable identity requires the explicit Gmail backend.")
+        evidence = validate_identity_evidence(payload.get("identity_evidence"))
+        if evidence is None or any(evidence[key] != value for key, value in {
+            "namespace": "gmail-message-v1", "continuity": "native",
+            "backend": "gmail", "generation": None,
+        }.items()):
+            raise PimcampError("unsupported", "The native identity context is unsupported.")
+        adapter_id = self._native_message_id(evidence["key"], deadline)
+        if adapter_id != evidence["key"]:
+            raise PimcampError("conflict", "The native message identity did not match.")
+        return {"matches": [{"adapter_id": adapter_id}]}
+
+    def _native_message_id(self, key: str, deadline: float) -> str:
+        # Direct lookup is account-wide; the issuing folder is only an observation.
+        # Without evidenced lower error classification, a failed lookup stays
+        # unavailable rather than being guessed to mean deletion.
+        output = self._run_json(
+            ["gmail", "messages", "get", key, "--format", "metadata"], None, deadline
+        )
+        if not isinstance(output, dict) or not isinstance(output.get("id"), str) or not output["id"]:
+            raise unavailable("Himalaya returned invalid native message metadata.")
+        return output["id"]
 
     def _list(self, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         page = _page(payload.get("cursor"))
@@ -273,6 +310,8 @@ class HimalayaOperationsAdapter:
         ]
         if self.config.config_paths:
             command.extend(("--config", ":".join(self.config.config_paths)))
+        if self.config.backend is not None:
+            command.extend(("--backend", self.config.backend))
         return command
 
 

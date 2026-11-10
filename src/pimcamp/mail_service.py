@@ -93,6 +93,7 @@ class AccountMailService:
         messages = []
         for item in result["messages"]:
             summary, adapter_id, evidence = _summary(item)
+            evidence = _bind_evidence(account, evidence)
             source_ref = store.store_source(
                 account.account_id,
                 account.operations_fingerprint,
@@ -126,6 +127,8 @@ class AccountMailService:
         if source["adapter_fingerprint"] != account.operations_fingerprint:
             return cannot_link("source_context_changed")
         evidence = source["identity_evidence"]
+        if account.address is None:
+            return cannot_link("account_identity_unconfigured")
         if evidence is None:
             return cannot_link("identity_evidence_missing")
         if account.identity_capability not in {"native", "mapped"}:
@@ -133,15 +136,21 @@ class AccountMailService:
         if evidence["continuity"] != account.identity_capability:
             return cannot_link("identity_capability_mismatch")
         try:
+            adapter_evidence = _adapter_evidence(account, evidence)
+        except PimcampError:
+            return cannot_link("account_identity_changed")
+        try:
             service = self._service(account)
             adapter_id = resolve_identity(
                 service.operations,
-                evidence,
+                adapter_evidence,
                 service._deadline(),
             )
         except AmbiguousIdentityError:
             return cannot_link("ambiguous_identity")
         except PimcampError as exc:
+            if exc.code == "conflict":
+                return cannot_link("identity_not_resolvable")
             if exc.code == "unsupported":
                 return cannot_link("identity_resolution_unsupported")
             if exc.code == "not_found":
@@ -364,7 +373,7 @@ class AccountMailService:
         if evidence["continuity"] != account.identity_capability:
             raise PimcampError("conflict", "The message identity capability has changed.")
         service = self._service(account)
-        return resolve_identity(service.operations, evidence, service._deadline())
+        return resolve_identity(service.operations, _adapter_evidence(account, evidence), service._deadline())
 
     def _account(self, account_id: str) -> MailAccountConfig:
         if account_id not in self.allowed_account_ids:
@@ -392,6 +401,26 @@ class AccountMailService:
 def _account_scope(account: MailAccountConfig) -> str:
     scope = f"{account.account_id}\0{account.operations_fingerprint}".encode("utf-8")
     return hashlib.sha256(scope).hexdigest()
+
+
+def _binding_prefix(account: MailAccountConfig) -> str:
+    if account.address is None:
+        raise PimcampError("unsupported", "The account address is not configured.")
+    binding = canonical_json([account.account_id, account.address])
+    return "pimcamp.account.v1:" + hashlib.sha256(binding).hexdigest() + ":"
+
+
+def _bind_evidence(account: MailAccountConfig, evidence: dict[str, Any] | None):
+    if evidence is None or account.address is None:
+        return None
+    return {**evidence, "namespace": _binding_prefix(account) + evidence["namespace"]}
+
+
+def _adapter_evidence(account: MailAccountConfig, evidence: dict[str, Any]):
+    prefix = _binding_prefix(account)
+    if not evidence["namespace"].startswith(prefix):
+        raise PimcampError("conflict", "The account binding changed; the message cannot be resolved.")
+    return {**evidence, "namespace": evidence["namespace"][len(prefix):]}
 
 
 def _summary(value: Any) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
