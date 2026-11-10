@@ -1,6 +1,7 @@
 """Private WSGI routes for the authenticated mail viewer and browser replies."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 import hmac
 import json
@@ -31,8 +32,8 @@ class IdentityAssertionVerifier(Protocol):
 
 @dataclass(frozen=True)
 class SessionPolicy:
-    idle_seconds: float
-    absolute_seconds: float
+    idle_seconds: float = 30 * 60
+    absolute_seconds: float = 12 * 60 * 60
 
     def __post_init__(self) -> None:
         if self.idle_seconds <= 0 or self.absolute_seconds <= 0:
@@ -45,6 +46,27 @@ class _Session:
     csrf_token: str
     created_at: float
     last_seen: float
+
+
+class MailHTTPError(Exception):
+    """Versioned browser-only error, separate from the stable v1 CLI errors."""
+
+    def __init__(
+        self, status: int, code: str, message: str, *, retryable: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+    def public_value(self) -> dict[str, Any]:
+        return {
+            "contract_version": V2_CONTRACT_VERSION,
+            "code": self.code,
+            "retryable": self.retryable,
+            "message": self.message,
+        }
 
 
 class MailSessionStore:
@@ -60,19 +82,39 @@ class MailSessionStore:
         self._sessions[token] = session
         return token, session
 
-    def get(self, token: str, *, touch: bool = True) -> _Session | None:
+    def get(self, token: str) -> _Session | None:
+        return self._active_session(token, self.clock())
+
+    def renew(self, token: str) -> _Session | None:
+        now = self.clock()
+        session = self._active_session(token, now)
+        if session is not None:
+            session.last_seen = now
+        return session
+
+    def invalidate(self, token: str) -> None:
+        self._sessions.pop(token, None)
+
+    def deadlines(self, session: _Session) -> dict[str, str]:
+        return {
+            "idle_deadline": _rfc3339_utc(
+                session.last_seen + self.policy.idle_seconds
+            ),
+            "absolute_deadline": _rfc3339_utc(
+                session.created_at + self.policy.absolute_seconds
+            ),
+        }
+
+    def _active_session(self, token: str, now: float) -> _Session | None:
         session = self._sessions.get(token)
         if session is None:
             return None
-        now = self.clock()
         if (
             now - session.last_seen >= self.policy.idle_seconds
             or now - session.created_at >= self.policy.absolute_seconds
         ):
             self._sessions.pop(token, None)
             return None
-        if touch:
-            session.last_seen = now
         return session
 
 
@@ -89,7 +131,7 @@ class MailHTTPApplication:
         config: Config,
         identity_verifier: IdentityAssertionVerifier,
         account_authorizer: Callable[[str], Iterable[str]],
-        session_policy: SessionPolicy,
+        session_policy: SessionPolicy | None = None,
         *,
         page_path: Path | None = None,
         status_reconciler: Callable[[str, str, str], str | None] | None = None,
@@ -98,7 +140,7 @@ class MailHTTPApplication:
         self.config = config
         self.identity_verifier = identity_verifier
         self.account_authorizer = account_authorizer
-        self.sessions = MailSessionStore(session_policy, clock)
+        self.sessions = MailSessionStore(session_policy or SessionPolicy(), clock)
         self.page_path = page_path or Path(__file__).resolve().parents[2] / "ui" / "mail" / "index.html"
         self.status_reconciler = status_reconciler
 
@@ -113,6 +155,10 @@ class MailHTTPApplication:
         try:
             if method == "POST" and path == "/mail/api/session":
                 return self._create_session(headers, body)
+            if method == "POST" and path == "/mail/api/session/activity":
+                return self._session_activity(headers, body)
+            if method == "POST" and path == "/mail/api/session/logout":
+                return self._logout(headers, body)
             if method == "GET" and path.startswith("/mail/m/"):
                 return self._page(path, headers)
             if method == "GET" and path.startswith("/mail/assets/"):
@@ -127,8 +173,8 @@ class MailHTTPApplication:
                     state.close()
                 return self._json(200, result)
             if method == "POST" and path == "/mail/api/v2/replies/prepare":
-                principal, accounts, session = self._mutation_principal(headers)
                 self._require_origin(headers)
+                principal, accounts, session = self._mutation_principal(headers)
                 self._require_csrf(headers, session)
                 request = validate_browser_prepare(_json_body(body))
                 state = State(self.config.state_path)
@@ -147,8 +193,8 @@ class MailHTTPApplication:
                     operation_id = str(uuid.UUID(operation_id))
                 except ValueError as exc:
                     raise invalid("The reply operation ID is invalid.") from exc
-                principal, accounts, session = self._mutation_principal(headers)
                 self._require_origin(headers)
+                principal, accounts, session = self._mutation_principal(headers)
                 self._require_csrf(headers, session)
                 request = validate_browser_submit(_json_body(body))
                 state = State(self.config.state_path)
@@ -169,16 +215,38 @@ class MailHTTPApplication:
                     operation_id = str(uuid.UUID(operation_id))
                 except ValueError as exc:
                     raise invalid("The reply operation ID is invalid.") from exc
-                principal, accounts = self._browser_principal(headers, touch=False)
-                state = State.open_read_only(self.config.state_path)
+                state: State | None = None
                 try:
+                    principal, accounts = self._browser_principal(headers)
+                    state = State.open_read_only(self.config.state_path)
                     result = self._service(state, principal, accounts).send_status(
                         account_id, operation_id
                     )
+                except MailHTTPError:
+                    raise
+                except PimcampError as exc:
+                    if exc.code == "permission_denied":
+                        raise
+                    raise MailHTTPError(
+                        503,
+                        "status_unavailable",
+                        "Pimcamp could not determine the send status.",
+                        retryable=True,
+                    ) from exc
+                except Exception as exc:
+                    raise MailHTTPError(
+                        503,
+                        "status_unavailable",
+                        "Pimcamp could not determine the send status.",
+                        retryable=True,
+                    ) from exc
                 finally:
-                    state.close()
+                    if state is not None:
+                        state.close()
                 return self._json(200, result)
             return self._json(404, {"contract_version": V2_CONTRACT_VERSION, "code": "not_found", "message": "The route is unavailable."})
+        except MailHTTPError as exc:
+            return self._json(exc.status, exc.public_value())
         except PimcampError as exc:
             return self._json(_status_for(exc), exc.public_value(V2_CONTRACT_VERSION))
         except Exception:
@@ -232,6 +300,7 @@ class MailHTTPApplication:
                 for account_id in sorted(accounts)
                 if account_id in self.config.mail_accounts
             ],
+            **self.sessions.deadlines(session),
         }
         response = self._json(200, result)
         cookie = (
@@ -242,6 +311,39 @@ class MailHTTPApplication:
             response.status,
             (*response.headers, ("Set-Cookie", cookie)),
             response.body,
+        )
+
+    def _session_activity(
+        self, headers: dict[str, str], body: bytes | str
+    ) -> HTTPResponse:
+        self._require_origin(headers)
+        principal, token, session = self._authenticated_session(headers)
+        if not self._authorized_accounts(principal):
+            raise PimcampError("permission_denied", "No mail accounts are authorized.")
+        self._require_csrf(headers, session)
+        validate_browser_session(_json_body(body))
+        session = self.sessions.renew(token)
+        if session is None:
+            raise _session_expired()
+        return self._json(
+            200,
+            {"status": "authenticated", **self.sessions.deadlines(session)},
+        )
+
+    def _logout(self, headers: dict[str, str], body: bytes | str) -> HTTPResponse:
+        self._require_origin(headers)
+        _, token, session = self._authenticated_session(headers)
+        self._require_csrf(headers, session)
+        validate_browser_session(_json_body(body))
+        self.sessions.invalidate(token)
+        cookie = (
+            "__Secure-pimcamp_mail_session=; Path=/mail; HttpOnly; Secure; "
+            "SameSite=Strict; Max-Age=0"
+        )
+        return HTTPResponse(
+            204,
+            (*self._base_headers("application/json; charset=utf-8"), ("Set-Cookie", cookie)),
+            b"",
         )
 
     def _page(self, path: str, headers: dict[str, str]) -> HTTPResponse:
@@ -287,25 +389,27 @@ class MailHTTPApplication:
             raise PimcampError("backend_unavailable", "The mail asset is unavailable.") from exc
         return HTTPResponse(200, self._base_headers(content_type), asset)
 
-    def _browser_principal(
-        self, headers: dict[str, str], *, touch: bool = True
-    ) -> tuple[str, frozenset[str]]:
+    def _browser_principal(self, headers: dict[str, str]) -> tuple[str, frozenset[str]]:
+        principal, _, _ = self._authenticated_session(headers)
+        return principal, self._authorized_accounts(principal)
+
+    def _authenticated_session(
+        self, headers: dict[str, str]
+    ) -> tuple[str, str, _Session]:
         principal = self._verified_principal(headers)
         token = _cookie_value(headers.get("cookie", ""))
-        session = self.sessions.get(token, touch=touch) if token else None
-        if session is None or session.principal_id != principal:
+        session = self.sessions.get(token) if token else None
+        if session is None:
+            raise _session_expired()
+        if session.principal_id != principal:
             raise PimcampError("permission_denied", "An authenticated mail session is required.")
-        return principal, self._authorized_accounts(principal)
+        return principal, token, session
 
     def _mutation_principal(
         self, headers: dict[str, str]
     ) -> tuple[str, frozenset[str], _Session]:
-        principal, accounts = self._browser_principal(headers)
-        token = _cookie_value(headers.get("cookie", ""))
-        session = self.sessions.get(token) if token else None
-        if session is None:
-            raise PimcampError("permission_denied", "An authenticated mail session is required.")
-        return principal, accounts, session
+        principal, _, session = self._authenticated_session(headers)
+        return principal, self._authorized_accounts(principal), session
 
     def _verified_principal(self, headers: dict[str, str]) -> str:
         try:
@@ -374,6 +478,21 @@ def _json_body(body: bytes | str) -> Any:
     if isinstance(body, bytes):
         return loads_one(body)
     return loads_one(body)
+
+
+def _session_expired() -> MailHTTPError:
+    return MailHTTPError(
+        401,
+        "session_expired",
+        "The mail session has expired or is unavailable.",
+        retryable=False,
+    )
+
+
+def _rfc3339_utc(timestamp: float) -> str:
+    value = datetime.fromtimestamp(timestamp, timezone.utc)
+    timespec = "microseconds" if value.microsecond else "seconds"
+    return value.isoformat(timespec=timespec).replace("+00:00", "Z")
 
 
 def _cookie_value(cookie_header: str) -> str | None:

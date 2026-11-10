@@ -151,6 +151,7 @@ normalized `reason`, with no locator or URL.
 The browser routes are `GET /mail/m/{locator}`, the authenticated static assets
 `GET /mail/assets/{name}` (`mail.css`, `mail-client.js`, `mail-drafts.js`,
 `mail-text.js`, or `mail-app.js`), `POST /mail/api/session`,
+`POST /mail/api/session/activity`, `POST /mail/api/session/logout`,
 `GET /mail/api/v2/messages/{locator}`, `POST /mail/api/v2/replies/prepare`,
 `POST /mail/api/v2/replies/{operation_id}/submit`, and `GET /mail/api/v2/accounts/{account_id}/send-status/{operation_id}`. Reply
 preparation and status lookup do not send. Only the explicit browser submit
@@ -187,7 +188,32 @@ use that address for both the message From header and transport envelope.
 deployment decision backed by account/provider evidence.
 
 `POST /mail/api/session` accepts `{}` and returns `principal_id`, `csrf_token`,
-authorized `accounts`, and an HttpOnly, Secure, SameSite cookie. Message GET
+authorized `accounts`, `idle_deadline`, `absolute_deadline`, and an HttpOnly,
+Secure, SameSite cookie. Sessions default to a 30-minute idle limit and a
+12-hour absolute limit; equality with either deadline is expired, and activity
+never moves the absolute deadline. Missing or expired sessions return HTTP 401
+with the flat v2 error fields `code: "session_expired"`, `message`, and
+`retryable: false`. Actual origin, CSRF, account, or principal authorization
+failures remain HTTP 403 `permission_denied`.
+
+`POST /mail/api/session/activity` accepts only `{}` under the current session,
+same-origin check, and CSRF token. It returns `idle_deadline` and
+`absolute_deadline`; it is the only request that renews the idle limit. The
+authenticated foreground browser calls it before the associated deliberate
+read/navigation, composing edit, prepare, or explicit Send action. Background
+refresh, status polling, health checks, visibility alone, and remote message
+content do not renew the session. A `session_expired` response never replays a
+send: preserve local draft and operation identity, renew only on the user's
+action, then query read-only status before a later explicit Send.
+
+`POST /mail/api/session/logout` accepts `{}` with the same origin and CSRF
+checks, invalidates only the current mail session, clears its cookie, and
+returns 204. The client hides private content while retaining local draft and
+operation data; logout does not delete drafts or submit mail. An unavailable
+status lookup returns HTTP 503 `status_unavailable` with `retryable: true`, not
+a guessed send result.
+
+Message GET
 returns `account_id`, `account_label`, `locator`, a nested `source` object, and
 readable `body_parts`. `POST /mail/api/v2/replies/prepare` accepts
 `{"locator": "…", "body_text": "…"}` and returns `operation_id`, account/source

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -173,7 +174,7 @@ class MailV2Case(unittest.TestCase):
                 if principal == "human-operator" and authorized_accounts is not None
                 else self.account_ids if principal == "human-operator" else ()
             ),
-            SessionPolicy(idle_seconds=30, absolute_seconds=300),
+            SessionPolicy(),
             page_path=page_path,
             status_reconciler=status_reconciler,
             clock=clock or __import__("time").time,
@@ -197,6 +198,10 @@ class MailV2Case(unittest.TestCase):
         return headers
 
     def establish_session(self, app) -> tuple[str, str]:
+        cookie, csrf, _ = self.establish_session_details(app)
+        return cookie, csrf
+
+    def establish_session_details(self, app) -> tuple[str, str, dict[str, object]]:
         from pimcamp.jsonio import loads_one
 
         response = app.handle(
@@ -211,7 +216,13 @@ class MailV2Case(unittest.TestCase):
         session = loads_one(response.body)
         self.assertEqual("human-operator", session["principal_id"])
         csrf = session["csrf_token"]
-        return cookie, csrf
+        return cookie, csrf, session
+
+    @staticmethod
+    def rfc3339_utc(timestamp: float) -> str:
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
 
     def test_v2_accounts_and_account_info_are_explicitly_account_scoped(self) -> None:
         listed = self.invoke("accounts", {})
@@ -697,26 +708,103 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(0, len(self.calls_for("send")))
 
     def test_expired_mail_session_hides_reader_content(self) -> None:
-        locator, _ = self.linked_locator()
-        now = [1_000.0]
-        app = self.app(clock=lambda: now[0])
-        cookie, _ = self.establish_session(app)
-        now[0] += 31
-        response = app.handle(
-            "GET",
-            f"/mail/api/v2/messages/{locator}",
-            self.authenticated_headers(cookie),
-        )
-        self.assertEqual(403, response.status)
-        self.assertEqual(0, len(self.calls_for("read")))
-
-    def test_send_status_poll_does_not_renew_the_idle_mail_session(self) -> None:
         from pimcamp.jsonio import loads_one
 
         locator, _ = self.linked_locator()
         now = [1_000.0]
         app = self.app(clock=lambda: now[0])
-        cookie, csrf = self.establish_session(app)
+        cookie, csrf, created = self.establish_session_details(app)
+        self.assertEqual(
+            self.rfc3339_utc(now[0] + 30 * 60), created["idle_deadline"]
+        )
+        self.assertEqual(
+            self.rfc3339_utc(now[0] + 12 * 60 * 60),
+            created["absolute_deadline"],
+        )
+        mutation_headers = self.authenticated_headers(cookie, csrf)
+        mutation_headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            mutation_headers,
+            json.dumps({"locator": locator, "body_text": "Deadline fixture"}),
+        )
+        self.assertEqual(200, prepared.status)
+        operation_id = loads_one(prepared.body)["operation_id"]
+
+        now[0] += 29 * 60
+        readable = app.handle(
+            "GET",
+            f"/mail/api/v2/messages/{locator}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertEqual(200, readable.status)
+        reads_at_29_minutes = len(self.calls_for("read"))
+
+        now[0] += 60
+        response = app.handle(
+            "GET",
+            f"/mail/api/v2/messages/{locator}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertEqual(401, response.status)
+        error = loads_one(response.body)
+        self.assertEqual("session_expired", error["code"])
+        self.assertFalse(error["retryable"])
+        self.assertEqual(
+            {"contract_version", "code", "message", "retryable"}, set(error)
+        )
+        self.assertEqual(reads_at_29_minutes, len(self.calls_for("read")))
+
+        submit = {
+            "account_id": "account-a",
+            "locator": locator,
+            "from": {"name": "Owner", "address": "owner@example.test"},
+            "to": [{"name": None, "address": "reply-one@example.test"}],
+            "cc": [],
+            "bcc": [],
+            "subject": "Re: Quarterly review",
+            "body_text": "Deadline fixture",
+        }
+        expired_submit = app.handle(
+            "POST",
+            f"/mail/api/v2/replies/{operation_id}/submit",
+            mutation_headers,
+            json.dumps(submit),
+        )
+        self.assertEqual(401, expired_submit.status)
+        self.assertEqual("session_expired", loads_one(expired_submit.body)["code"])
+        self.assertEqual(0, len(self.calls_for("send")))
+
+    def test_missing_mail_session_has_a_distinct_flat_renewal_error(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        app = self.app()
+        response = app.handle(
+            "GET",
+            f"/mail/api/v2/messages/{locator}",
+            {"x-test-principal": "human-operator"},
+        )
+        self.assertEqual(401, response.status)
+        self.assertEqual(
+            {
+                "contract_version": "pimcamp.v2",
+                "code": "session_expired",
+                "retryable": False,
+                "message": "The mail session has expired or is unavailable.",
+            },
+            loads_one(response.body),
+        )
+
+    def test_activity_renews_idle_deadline_but_status_poll_does_not(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        now = [1_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie, csrf, created = self.establish_session_details(app)
+        created_at = now[0]
         headers = self.authenticated_headers(cookie, csrf)
         headers["origin"] = ORIGIN
         prepared = app.handle(
@@ -727,9 +815,45 @@ class MailV2Case(unittest.TestCase):
         )
         self.assertEqual(200, prepared.status)
         operation_id = loads_one(prepared.body)["operation_id"]
-        reads_before_expiry = len(self.calls_for("read"))
 
-        now[0] += 25
+        now[0] += 29 * 60
+        wrong_origin = dict(headers, origin="https://other.example.test")
+        rejected_origin = app.handle(
+            "POST",
+            "/mail/api/session/activity",
+            wrong_origin,
+            b"{}",
+        )
+        self.assertEqual(403, rejected_origin.status)
+        self.assertEqual("permission_denied", loads_one(rejected_origin.body)["code"])
+        wrong_csrf = dict(headers)
+        wrong_csrf["x-pimcamp-csrf"] = "wrong"
+        rejected_csrf = app.handle(
+            "POST",
+            "/mail/api/session/activity",
+            wrong_csrf,
+            b"{}",
+        )
+        self.assertEqual(403, rejected_csrf.status)
+        self.assertEqual("permission_denied", loads_one(rejected_csrf.body)["code"])
+
+        activity = app.handle(
+            "POST",
+            "/mail/api/session/activity",
+            headers,
+            b"{}",
+        )
+        self.assertEqual(200, activity.status)
+        activity_result = loads_one(activity.body)
+        self.assertEqual(
+            self.rfc3339_utc(created_at + 59 * 60),
+            activity_result["idle_deadline"],
+        )
+        self.assertEqual(
+            created["absolute_deadline"], activity_result["absolute_deadline"]
+        )
+
+        now[0] += 28 * 60
         status = app.handle(
             "GET",
             f"/mail/api/v2/accounts/account-a/send-status/{operation_id}",
@@ -738,14 +862,128 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(200, status.status)
         self.assertEqual("not_submitted", loads_one(status.body)["status"])
 
-        now[0] += 6
+        now[0] += 2 * 60
         expired = app.handle(
             "GET",
             f"/mail/api/v2/messages/{locator}",
             self.authenticated_headers(cookie),
         )
-        self.assertNotEqual(200, expired.status)
-        self.assertEqual(reads_before_expiry, len(self.calls_for("read")))
+        self.assertEqual(401, expired.status)
+        self.assertEqual("session_expired", loads_one(expired.body)["code"])
+
+    def test_absolute_mail_session_deadline_wins_despite_foreground_activity(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        now = [5_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie, csrf, created = self.establish_session_details(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        absolute_deadline = created["absolute_deadline"]
+
+        for _ in range(24):
+            now[0] += 29 * 60
+            activity = app.handle(
+                "POST",
+                "/mail/api/session/activity",
+                headers,
+                b"{}",
+            )
+            self.assertEqual(200, activity.status)
+            result = loads_one(activity.body)
+            self.assertEqual(absolute_deadline, result["absolute_deadline"])
+            self.assertEqual(
+                self.rfc3339_utc(now[0] + 30 * 60), result["idle_deadline"]
+            )
+
+        now[0] = 5_000.0 + 12 * 60 * 60
+        expired = app.handle(
+            "POST",
+            "/mail/api/session/activity",
+            headers,
+            b"{}",
+        )
+        self.assertEqual(401, expired.status)
+        error = loads_one(expired.body)
+        self.assertEqual("session_expired", error["code"])
+        self.assertFalse(error["retryable"])
+
+    def test_logout_invalidates_only_current_session_and_requires_origin_csrf(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        app = self.app()
+        cookie_one, csrf_one = self.establish_session(app)
+        cookie_two, _ = self.establish_session(app)
+        headers_one = self.authenticated_headers(cookie_one, csrf_one)
+        headers_one["origin"] = ORIGIN
+
+        wrong_origin = dict(headers_one, origin="https://other.example.test")
+        denied_origin = app.handle(
+            "POST", "/mail/api/session/logout", wrong_origin, b"{}"
+        )
+        self.assertEqual(403, denied_origin.status)
+        self.assertEqual("permission_denied", loads_one(denied_origin.body)["code"])
+
+        wrong_csrf = dict(headers_one)
+        wrong_csrf["x-pimcamp-csrf"] = "wrong"
+        denied_csrf = app.handle(
+            "POST", "/mail/api/session/logout", wrong_csrf, b"{}"
+        )
+        self.assertEqual(403, denied_csrf.status)
+        self.assertEqual("permission_denied", loads_one(denied_csrf.body)["code"])
+
+        logout = app.handle(
+            "POST", "/mail/api/session/logout", headers_one, b"{}"
+        )
+        self.assertEqual(204, logout.status)
+        self.assertEqual(b"", logout.body)
+        self.assertIn("Max-Age=0", dict(logout.headers)["Set-Cookie"])
+        self.assertEqual(
+            401,
+            app.handle(
+                "GET",
+                f"/mail/api/v2/messages/{locator}",
+                self.authenticated_headers(cookie_one),
+            ).status,
+        )
+        self.assertEqual(
+            200,
+            app.handle(
+                "GET",
+                f"/mail/api/v2/messages/{locator}",
+                self.authenticated_headers(cookie_two),
+            ).status,
+        )
+        self.assertEqual(0, len(self.calls_for("send")))
+
+    def test_status_lookup_failure_uses_truthful_status_unavailable_error(self) -> None:
+        from pimcamp.jsonio import loads_one
+
+        locator, _ = self.linked_locator()
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "Status fixture"}),
+        )
+        self.assertEqual(200, prepared.status)
+        operation_id = loads_one(prepared.body)["operation_id"]
+        self.state_path.rename(self.root / "unavailable.sqlite3")
+
+        status = app.handle(
+            "GET",
+            f"/mail/api/v2/accounts/account-a/send-status/{operation_id}",
+            self.authenticated_headers(cookie),
+        )
+        self.assertEqual(503, status.status)
+        error = loads_one(status.body)
+        self.assertEqual("status_unavailable", error["code"])
+        self.assertTrue(error["retryable"])
 
     def test_concurrent_explicit_submits_share_one_transport_claim(self) -> None:
         from pimcamp.jsonio import loads_one
