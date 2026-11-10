@@ -199,6 +199,12 @@
       } catch (error) {
         state.activityError = error;
         if (isSessionError(error)) await requireRenewal();
+        else if (error?.status === 403 && error?.code === "permission_denied") {
+          await requireRenewal({
+            title: "Mail session needs attention",
+            message: "Pimcamp could not use this tab's mail session. Continue to recheck session and account access before reopening this message. Your saved reply and send operation remain in this browser."
+          });
+        }
         else showComposerMessage(publicError(error), "error");
         return false;
       } finally {
@@ -807,7 +813,10 @@
     scheduleDeadline();
   }
 
-  async function requireRenewal() {
+  async function requireRenewal({
+    title = "Mail session expired",
+    message = "Your reply and send-operation identity are preserved in this browser. Continue your mail session to reopen the message and check any send operation."
+  } = {}) {
     if (state.renewalPromise) return state.renewalPromise;
     state.renewalPromise = (async () => {
       const save = state.draft ? queueSave() : Promise.resolve(true);
@@ -815,10 +824,10 @@
       state.authorizedAccounts = new Map();
       client.setCsrfToken("");
       hidePrivateContent({ clearAuthorization: true });
-      setGate("Mail session expired", "Your reply and send-operation identity are preserved in this browser. Continue your mail session to reopen the message and check any send operation.", "reauth");
+      setGate(title, message, "reauth");
       const saved = await save;
       if (!saved && state.draft) {
-        setGate("Mail session expired", "Browser storage could not confirm recovery. The reply remains only in this tab's memory; keep this tab open and continue your mail session to reopen it.", "reauth");
+        setGate(title, "Browser storage could not confirm recovery. The reply remains only in this tab's memory; keep this tab open and continue your mail session to reopen it.", "reauth");
       }
     })();
     try { await state.renewalPromise; }

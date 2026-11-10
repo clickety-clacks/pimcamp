@@ -1028,6 +1028,58 @@ test("403 permission denial during status lookup hides private content and is no
   assert.equal(app.elements.get("continue-session").hidden, true);
 });
 
+test("a rejected tab session snapshot clears on 403 activity and continues only after human action", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const operationPayload = {
+    account_id: "account-1", locator: "locator-1", from: choice,
+    to: [{ address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Preserve across tabs"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-stale-tab",
+    from_choices: [choice], ...operationPayload, operation_id: "op-stale-tab", operation_status: "unknown",
+    operation_attempted: true, operation_payload: operationPayload
+  });
+  const snapshot = {
+    status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-old-tab",
+    accounts: [{ account_id: "account-1", label: "Work" }],
+    idle_deadline: "2026-11-10T12:30:00Z", absolute_deadline: "2026-11-11T00:00:00Z"
+  };
+  const staleSession = Object.assign(new Error("the browser cookie now names another tab's session"), {
+    status: 403, code: "permission_denied", retryable: false
+  });
+  const app = mailAppFixture({
+    navigationType: "reload", sessionSnapshot: snapshot, storedDraft,
+    activities: [staleSession],
+    statuses: [{ status: "not_submitted", retry_eligible: true }]
+  });
+  await app.settle();
+
+  assert.equal(app.calls.session.length, 0);
+  assert.equal(app.calls.activity.length, 1);
+  assert.equal(app.calls.message.length, 0);
+  assert.equal(app.calls.status.length, 0);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.sessionStorageRecords.has("pimcamp-mail-session-v2"), false);
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.elements.get("source-body").textContent, "");
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session needs attention");
+  assert.equal(app.elements.get("continue-session").hidden, false);
+  assert.equal(app.savedDraft.operation_id, "op-stale-tab");
+  assert.equal(app.savedDraft.body_text, "Preserve across tabs");
+
+  await app.elements.get("continue-session").emit("click");
+  await app.settle();
+
+  assert.equal(app.calls.session.length, 1);
+  assert.equal(app.calls.message.length, 1);
+  assert.deepEqual(app.calls.status.map(call => call.operationId), ["op-stale-tab"]);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.savedDraft.operation_id, "op-stale-tab");
+  assert.equal(app.savedDraft.body_text, "Preserve across tabs");
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+});
+
 test("expired activity never submits and renewal checks the same operation before a later explicit send", async () => {
   const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
   const payload = {
