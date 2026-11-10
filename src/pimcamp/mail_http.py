@@ -290,7 +290,10 @@ class MailHTTPApplication:
         accounts = self._authorized_accounts(principal)
         if not accounts:
             raise PimcampError("permission_denied", "No mail accounts are authorized.")
-        token, session = self.sessions.create(principal)
+        token = _cookie_value(headers.get("cookie", ""))
+        session = self.sessions.get(token) if token else None
+        if session is None or session.principal_id != principal:
+            token, session = self.sessions.create(principal)
         result = {
             "status": "authenticated",
             "principal_id": principal,

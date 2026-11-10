@@ -707,6 +707,150 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(403, response.status)
         self.assertEqual(0, len(self.calls_for("send")))
 
+    def test_two_tabs_share_cookie_and_csrf_without_resetting_deadlines(self) -> None:
+        self.write_adapter_state([
+            message("lower-id-1", "stable-message-1"),
+            message("lower-id-2", "stable-message-2"),
+        ])
+        listed = self.invoke("list_account", {"account_id": "account-a", "limit": 20})
+        locators = [
+            self.invoke("issue_link", {
+                "account_id": "account-a", "source_ref": source["source_ref"],
+            })["result"]["locator"]
+            for source in listed["result"]["messages"]
+        ]
+        self.assertEqual(2, len(set(locators)))
+        now = [1_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie_a, csrf_a, session_a = self.establish_session_details(app)
+        now[0] += 60
+        opened_b = app.handle(
+            "POST", "/mail/api/session",
+            {**self.authenticated_headers(cookie_a), "origin": ORIGIN}, b"{}",
+        )
+        self.assertEqual(200, opened_b.status)
+        session_b = json.loads(opened_b.body)
+        cookie_b = dict(opened_b.headers)["Set-Cookie"].split(";", 1)[0]
+        self.assertEqual(cookie_a, cookie_b)
+        self.assertEqual(session_a, session_b)
+
+        # Both tabs send the browser's shared cookie and their own saved CSRF.
+        for locator, csrf in zip(locators, [csrf_a, session_b["csrf_token"]]):
+            now[0] += 60
+            headers = {**self.authenticated_headers(cookie_b, csrf), "origin": ORIGIN}
+            activity = app.handle("POST", "/mail/api/session/activity", headers, b"{}")
+            self.assertEqual(200, activity.status)
+            deadlines = json.loads(activity.body)
+            self.assertEqual(session_a["absolute_deadline"], deadlines["absolute_deadline"])
+            read = app.handle("GET", f"/mail/api/v2/messages/{locator}", headers)
+            self.assertEqual(200, read.status)
+            self.assertEqual(locator, json.loads(read.body)["locator"])
+        self.assertEqual(2, len(self.calls_for("read")))
+        self.assertEqual(0, len(self.calls_for("send")))
+
+    def test_session_reuse_reauthorizes_and_does_not_extend_idle(self) -> None:
+        self.account_ids = ["account-a", "account-b"]
+        self.write_config()
+        now = [1_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie, csrf, original = self.establish_session_details(app)
+        app.account_authorizer = lambda principal: ["account-b"]
+        headers = {**self.authenticated_headers(cookie), "origin": ORIGIN}
+        now[0] += 29 * 60
+        reused = app.handle("POST", "/mail/api/session", headers, b"{}")
+        self.assertEqual(200, reused.status)
+        result = json.loads(reused.body)
+        self.assertEqual(csrf, result["csrf_token"])
+        self.assertEqual([{"account_id": "account-b", "label": "Fixture account-b"}], result["accounts"])
+        for field in ("idle_deadline", "absolute_deadline"):
+            self.assertEqual(original[field], result[field])
+        now[0] += 60
+        expired = app.handle("POST", "/mail/api/session/activity", {
+            **headers, "x-pimcamp-csrf": csrf,
+        }, b"{}")
+        self.assertEqual(401, expired.status)
+        self.assertEqual("session_expired", json.loads(expired.body)["code"])
+
+    def test_session_creation_replaces_expired_or_invalid_cookie(self) -> None:
+        for case in ("idle", "absolute", "unknown", "malformed", "logged_out", "missing"):
+            with self.subTest(case=case):
+                now = [1_000.0]
+                app = self.app(clock=lambda: now[0])
+                cookie, csrf, original = self.establish_session_details(app)
+                presented = cookie
+                if case == "idle":
+                    now[0] += 30 * 60
+                elif case == "absolute":
+                    # Keep idle alive until the fixed absolute deadline.
+                    headers = {**self.authenticated_headers(cookie, csrf), "origin": ORIGIN}
+                    for _ in range(24):
+                        now[0] += 29 * 60
+                        self.assertEqual(200, app.handle(
+                            "POST", "/mail/api/session/activity", headers, b"{}",
+                        ).status)
+                    now[0] = 1_000.0 + 12 * 60 * 60
+                elif case == "unknown":
+                    presented = "__Secure-pimcamp_mail_session=unknown"
+                elif case == "malformed":
+                    presented = '__Secure-pimcamp_mail_session="unterminated'
+                elif case == "logged_out":
+                    self.assertEqual(204, app.handle("POST", "/mail/api/session/logout", {
+                        **self.authenticated_headers(cookie, csrf), "origin": ORIGIN,
+                    }, b"{}").status)
+                else:
+                    presented = ""
+                renewed = app.handle("POST", "/mail/api/session", {
+                    **self.authenticated_headers(presented), "origin": ORIGIN,
+                }, b"{}")
+                self.assertEqual(200, renewed.status)
+                result = json.loads(renewed.body)
+                self.assertNotEqual(cookie, dict(renewed.headers)["Set-Cookie"].split(";", 1)[0])
+                self.assertNotEqual(csrf, result["csrf_token"])
+                self.assertEqual(self.rfc3339_utc(now[0] + 30 * 60), result["idle_deadline"])
+                self.assertEqual(self.rfc3339_utc(now[0] + 12 * 60 * 60), result["absolute_deadline"])
+        self.assertEqual(0, len(self.calls_for("send")))
+
+    def test_session_creation_never_reuses_another_principals_session(self) -> None:
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        app.account_authorizer = lambda principal: ["account-a"]
+        other = app.handle("POST", "/mail/api/session", {
+            "cookie": cookie, "origin": ORIGIN, "x-test-principal": "other-operator",
+        }, b"{}")
+        self.assertEqual(200, other.status)
+        result = json.loads(other.body)
+        other_cookie = dict(other.headers)["Set-Cookie"].split(";", 1)[0]
+        self.assertEqual("other-operator", result["principal_id"])
+        self.assertNotEqual(cookie, other_cookie)
+        self.assertNotEqual(csrf, result["csrf_token"])
+        for principal, selected_cookie, selected_csrf in (
+            ("human-operator", cookie, csrf),
+            ("other-operator", other_cookie, result["csrf_token"]),
+        ):
+            self.assertEqual(200, app.handle("POST", "/mail/api/session/activity", {
+                "origin": ORIGIN, "cookie": selected_cookie,
+                "x-test-principal": principal, "x-pimcamp-csrf": selected_csrf,
+            }, b"{}").status)
+
+    def test_session_cookie_cannot_bypass_current_authentication_or_authorization(self) -> None:
+        now = [1_000.0]
+        app = self.app(clock=lambda: now[0])
+        cookie, csrf, original = self.establish_session_details(app)
+        headers = {**self.authenticated_headers(cookie), "origin": ORIGIN}
+        now[0] += 60
+        for overrides in ({"origin": "https://other.example.test"}, {"x-test-principal": ""}):
+            denied = app.handle("POST", "/mail/api/session", {**headers, **overrides}, b"{}")
+            self.assertEqual(403, denied.status)
+            self.assertNotIn("Set-Cookie", dict(denied.headers))
+        app.account_authorizer = lambda principal: []
+        denied = app.handle("POST", "/mail/api/session", headers, b"{}")
+        self.assertEqual(403, denied.status)
+        self.assertNotIn("Set-Cookie", dict(denied.headers))
+        app.account_authorizer = lambda principal: ["account-a"]
+        recovered = app.handle("POST", "/mail/api/session", headers, b"{}")
+        self.assertEqual(200, recovered.status)
+        self.assertEqual(original, json.loads(recovered.body))
+
     def test_expired_mail_session_hides_reader_content(self) -> None:
         from pimcamp.jsonio import loads_one
 
