@@ -148,7 +148,9 @@ link result contains `status: "linked"`, `account_id`, `locator`, and an
 absolute URL. A rejected link contains `status: "cannot_link"` and a
 normalized `reason`, with no locator or URL.
 
-The browser routes are `GET /mail/m/{locator}`, `POST /mail/api/session`,
+The browser routes are `GET /mail/m/{locator}`, the authenticated static assets
+`GET /mail/assets/{name}` (`mail.css`, `mail-client.js`, `mail-drafts.js`,
+`mail-text.js`, or `mail-app.js`), `POST /mail/api/session`,
 `GET /mail/api/v2/messages/{locator}`, `POST /mail/api/v2/replies/prepare`,
 `POST /mail/api/v2/replies/{operation_id}/submit`, and `GET /mail/api/v2/accounts/{account_id}/send-status/{operation_id}`. Reply
 preparation and status lookup do not send. Only the explicit browser submit
@@ -184,10 +186,13 @@ use that address for both the message From header and transport envelope.
 `selectable_from` is the configured authority list; setting it requires a
 deployment decision backed by account/provider evidence.
 
-`POST /mail/api/session` accepts `{}` and returns a CSRF token with an
-HttpOnly, Secure, SameSite cookie. `POST /mail/api/v2/replies/prepare` accepts
-`{"locator": "…", "body_text": "…"}` and returns the source/account context,
-verified From choices, editable recipients/subject/body, and an operation ID.
+`POST /mail/api/session` accepts `{}` and returns `principal_id`, `csrf_token`,
+authorized `accounts`, and an HttpOnly, Secure, SameSite cookie. Message GET
+returns `account_id`, `account_label`, `locator`, a nested `source` object, and
+readable `body_parts`. `POST /mail/api/v2/replies/prepare` accepts
+`{"locator": "…", "body_text": "…"}` and returns `operation_id`, account/source
+context, and a nested `reply` object containing `from_choices`,
+`selected_from`, editable `to`/`cc`/`bcc`, `subject`, and `body_text`.
 `POST /mail/api/v2/replies/{operation_id}/submit` accepts the reviewed
 `account_id`, `locator`, `from` address object, `to`/`cc`/`bcc` address arrays,
 `subject`, and `body_text`. The server re-resolves the source and derives
@@ -195,7 +200,10 @@ threading from it. Session creation requires the configured origin and the
 trusted upstream identity; later POSTs also require the session CSRF token.
 The message GET returns readable text parts; HTML parts are converted to
 text without executing message content or loading remote content. Send status
-returns one of `absent`, `pending`, `sent`, `not_submitted`, or `unknown`.
+returns one of `absent`, `pending`, `sent`, `not_submitted`, or `unknown`, plus
+`retry_eligible`; only positively established `not_submitted` is retryable.
+The status GET leaves an expired in-progress claim unresolved until a submission
+claim safely establishes a terminal state.
 
 Pimcamp is an independent project. It is not an official Pimalaya project and
 is not affiliated with or endorsed by Pimalaya.

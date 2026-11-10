@@ -167,12 +167,14 @@ class AccountMailService:
             "account_id": account.account_id,
             "account_label": account.label,
             "locator": locator,
-            "from": message["from"],
-            "to": message["to"],
-            "cc": message["cc"],
-            "reply_to": message["reply_to"],
-            "subject": message["subject"],
-            "date": message["sent_at"],
+            "source": {
+                "from": message["from"],
+                "to": message["to"],
+                "cc": message["cc"],
+                "reply_to": message["reply_to"],
+                "subject": message["subject"],
+                "date": message["sent_at"],
+            },
             "body_parts": _readable_body_parts(message["body_parts"]),
         }
 
@@ -207,13 +209,15 @@ class AccountMailService:
                 "subject": message["subject"],
                 "date": message["sent_at"],
             },
-            "from_options": selectable,
-            "default_from": default_from,
-            "to": recipients,
-            "cc": [],
-            "bcc": [],
-            "subject": subject,
-            "body_text": body_text,
+            "reply": {
+                "from_choices": selectable,
+                "selected_from": default_from,
+                "to": recipients,
+                "cc": [],
+                "bcc": [],
+                "subject": subject,
+                "body_text": body_text,
+            },
         }
 
     def submit_reply(
@@ -341,6 +345,7 @@ class AccountMailService:
             "account_id": account.account_id,
             "operation_id": operation_id,
             "status": status,
+            "retry_eligible": status == "not_submitted",
         }
 
     def _authorized_locator(

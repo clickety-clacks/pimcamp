@@ -114,6 +114,8 @@ class MailHTTPApplication:
                 return self._create_session(headers, body)
             if method == "GET" and path.startswith("/mail/m/"):
                 return self._page(path, headers)
+            if method == "GET" and path.startswith("/mail/assets/"):
+                return self._asset(path, headers)
             if method == "GET" and path.startswith("/mail/api/v2/messages/"):
                 locator = _one_path_segment(path, "/mail/api/v2/messages/")
                 principal, accounts = self._browser_principal(headers)
@@ -222,6 +224,7 @@ class MailHTTPApplication:
         token, session = self.sessions.create(principal)
         result = {
             "status": "authenticated",
+            "principal_id": principal,
             "csrf_token": session.csrf_token,
             "accounts": [
                 {"account_id": account_id, "label": self.config.mail_accounts[account_id].label}
@@ -261,6 +264,27 @@ class MailHTTPApplication:
             + (("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"),),
             page,
         )
+
+    def _asset(self, path: str, headers: dict[str, str]) -> HTTPResponse:
+        name = _one_path_segment(path, "/mail/assets/")
+        principal = self._verified_principal(headers)
+        if not self._authorized_accounts(principal):
+            raise PimcampError("permission_denied", "No mail accounts are authorized.")
+        content_types = {
+            "mail.css": "text/css; charset=utf-8",
+            "mail-client.js": "text/javascript; charset=utf-8",
+            "mail-drafts.js": "text/javascript; charset=utf-8",
+            "mail-text.js": "text/javascript; charset=utf-8",
+            "mail-app.js": "text/javascript; charset=utf-8",
+        }
+        content_type = content_types.get(name)
+        if content_type is None:
+            raise PimcampError("not_found", "The mail asset is unavailable.")
+        try:
+            asset = (self.page_path.parent / name).read_bytes()
+        except OSError as exc:
+            raise PimcampError("backend_unavailable", "The mail asset is unavailable.") from exc
+        return HTTPResponse(200, self._base_headers(content_type), asset)
 
     def _browser_principal(self, headers: dict[str, str]) -> tuple[str, frozenset[str]]:
         principal = self._verified_principal(headers)

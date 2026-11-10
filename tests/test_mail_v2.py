@@ -199,7 +199,9 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(200, response.status)
         cookie_header = dict(response.headers)["Set-Cookie"]
         cookie = cookie_header.split(";", 1)[0]
-        csrf = loads_one(response.body)["csrf_token"]
+        session = loads_one(response.body)
+        self.assertEqual("human-operator", session["principal_id"])
+        csrf = session["csrf_token"]
         return cookie, csrf
 
     def test_v2_accounts_and_account_info_are_explicitly_account_scoped(self) -> None:
@@ -292,12 +294,51 @@ class MailV2Case(unittest.TestCase):
         self.assertEqual(200, response.status)
         body = json.loads(response.body)
         self.assertEqual("account-a", body["account_id"])
+        self.assertEqual("Fixture account-a", body["account_label"])
         self.assertEqual("lower-id-moved", self.calls_for("read")[-1]["adapter_id"])
         rendered = body["body_parts"][0]["content_utf8"]
         self.assertIn("Hello", rendered)
         self.assertNotIn("send()", rendered)
         self.assertNotIn("remote.test", rendered)
+        self.assertEqual("Re: Quarterly review", body["source"]["subject"])
         self.assertEqual(url, f"{ORIGIN}/mail/m/{locator}")
+
+    def test_private_mail_assets_are_allowlisted_and_served_from_the_page_directory(self) -> None:
+        assets = {
+            "mail.css": ("text/css; charset=utf-8", b"body { color: black; }"),
+            "mail-client.js": ("text/javascript; charset=utf-8", b"export const client = true;"),
+            "mail-drafts.js": ("text/javascript; charset=utf-8", b"export const drafts = true;"),
+            "mail-text.js": ("text/javascript; charset=utf-8", b"export const text = true;"),
+            "mail-app.js": ("text/javascript; charset=utf-8", b"export const app = true;"),
+        }
+        for name, (_, body) in assets.items():
+            (self.root / name).write_bytes(body)
+        app = self.app()
+
+        denied = app.handle("GET", "/mail/assets/mail.css", {})
+        self.assertEqual(403, denied.status)
+        for name, (content_type, body) in assets.items():
+            with self.subTest(asset=name):
+                response = app.handle(
+                    "GET",
+                    f"/mail/assets/{name}",
+                    {"x-test-principal": "human-operator"},
+                )
+                self.assertEqual(200, response.status)
+                self.assertEqual(body, response.body)
+                self.assertEqual(content_type, dict(response.headers)["Content-Type"])
+                self.assertEqual("no-store", dict(response.headers)["Cache-Control"])
+
+        unknown = app.handle(
+            "GET", "/mail/assets/config.json", {"x-test-principal": "human-operator"}
+        )
+        self.assertEqual(404, unknown.status)
+        traversal = app.handle(
+            "GET",
+            "/mail/assets/%2e%2e%2fconfig.json",
+            {"x-test-principal": "human-operator"},
+        )
+        self.assertEqual(400, traversal.status)
 
     def test_locator_identity_capability_change_fails_as_conflict(self) -> None:
         locator, _ = self.linked_locator()
@@ -359,29 +400,31 @@ class MailV2Case(unittest.TestCase):
         )
         self.assertEqual(200, prepared.status)
         draft = loads_one(prepared.body)
+        reply = draft["reply"]
         self.assertEqual(
             ["reply-one@example.test", "reply-two@example.test"],
-            [item["address"] for item in draft["to"]],
+            [item["address"] for item in reply["to"]],
         )
-        self.assertIsNone(draft["default_from"])
-        self.assertEqual(2, len(draft["from_options"]))
+        self.assertIsNone(reply["selected_from"])
+        self.assertEqual(2, len(reply["from_choices"]))
         self.assertEqual(0, len(self.calls_for("send")))
 
         status_path = f"/mail/api/v2/accounts/account-a/send-status/{draft['operation_id']}"
         before_status = self.state_path.read_bytes()
         status = app.handle("GET", status_path, self.authenticated_headers(cookie))
         self.assertEqual("not_submitted", loads_one(status.body)["status"])
+        self.assertTrue(loads_one(status.body)["retry_eligible"])
         self.assertEqual(before_status, self.state_path.read_bytes())
 
         submit = {
             "account_id": "account-a",
             "locator": locator,
             "from": {"name": "Owner", "address": "owner@example.test"},
-            "to": draft["to"],
+            "to": reply["to"],
             "cc": [],
             "bcc": [],
-            "subject": draft["subject"],
-            "body_text": draft["body_text"],
+            "subject": reply["subject"],
+            "body_text": reply["body_text"],
         }
         sent = app.handle(
             "POST",
@@ -391,6 +434,7 @@ class MailV2Case(unittest.TestCase):
         )
         self.assertEqual(200, sent.status, sent.body)
         self.assertEqual("sent", loads_one(sent.body)["status"])
+        self.assertFalse(loads_one(sent.body).get("retry_eligible", False))
         self.assertEqual(1, len(self.calls_for("send")))
         self.assertEqual("owner@example.test", self.calls_for("send")[0]["sender"]["address"])
 
@@ -405,7 +449,48 @@ class MailV2Case(unittest.TestCase):
         before_status = self.state_path.read_bytes()
         status = app.handle("GET", status_path, self.authenticated_headers(cookie))
         self.assertEqual("sent", loads_one(status.body)["status"])
+        self.assertFalse(loads_one(status.body)["retry_eligible"])
         self.assertEqual(before_status, self.state_path.read_bytes())
+
+    def test_status_keeps_expired_unbegun_claim_pending_and_nonretryable(self) -> None:
+        from pimcamp.jsonio import loads_one
+        from pimcamp.mail_receipts import MailReplyReceipts
+        from pimcamp.state import State
+
+        locator, _ = self.linked_locator()
+        app = self.app()
+        cookie, csrf = self.establish_session(app)
+        headers = self.authenticated_headers(cookie, csrf)
+        headers["origin"] = ORIGIN
+        prepared = app.handle(
+            "POST",
+            "/mail/api/v2/replies/prepare",
+            headers,
+            json.dumps({"locator": locator, "body_text": "waiting preflight"}),
+        )
+        operation_id = loads_one(prepared.body)["operation_id"]
+        state = State(self.state_path)
+        try:
+            claim = MailReplyReceipts(state, ensure_schema=False).claim(
+                operation_id,
+                "human-operator",
+                "account-a",
+                locator,
+                "fixture-request-digest",
+                time.time() - 1,
+            )
+        finally:
+            state.close()
+        self.assertEqual("claimant", claim.state)
+
+        status_path = f"/mail/api/v2/accounts/account-a/send-status/{operation_id}"
+        before_status = self.state_path.read_bytes()
+        response = app.handle("GET", status_path, self.authenticated_headers(cookie))
+        result = loads_one(response.body)
+        self.assertEqual("pending", result["status"])
+        self.assertFalse(result["retry_eligible"])
+        self.assertEqual(before_status, self.state_path.read_bytes())
+        self.assertEqual(0, len(self.calls_for("send")))
 
     def test_browser_submit_requires_same_origin_csrf_and_prepared_account_binding(self) -> None:
         locator, _ = self.linked_locator()
@@ -420,6 +505,7 @@ class MailV2Case(unittest.TestCase):
             json.dumps({"locator": locator, "body_text": "draft"}),
         )
         prepared = json.loads(prepared_response.body)
+        reply = prepared["reply"]
         submit = {
             "account_id": "account-a",
             "locator": locator,
@@ -427,7 +513,7 @@ class MailV2Case(unittest.TestCase):
             "to": [{"name": None, "address": "reply@example.test"}],
             "cc": [],
             "bcc": [],
-            "subject": prepared["subject"],
+            "subject": reply["subject"],
             "body_text": "draft",
         }
         forged = dict(headers)
@@ -482,12 +568,13 @@ class MailV2Case(unittest.TestCase):
             json.dumps({"locator": locator, "body_text": "one explicit send"}),
         )
         draft = loads_one(prepared.body)
+        reply = draft["reply"]
         route = f"/mail/api/v2/replies/{draft['operation_id']}/submit"
         submit = {
             "account_id": "account-a", "locator": locator,
             "from": {"name": "Owner", "address": "owner@example.test"},
-            "to": draft["to"], "cc": [], "bcc": [],
-            "subject": draft["subject"], "body_text": draft["body_text"],
+            "to": reply["to"], "cc": [], "bcc": [],
+            "subject": reply["subject"], "body_text": reply["body_text"],
         }
         responses = []
         first = threading.Thread(
@@ -523,11 +610,12 @@ class MailV2Case(unittest.TestCase):
             json.dumps({"locator": locator, "body_text": "retry this exact draft"}),
         )
         draft = loads_one(prepared.body)
+        reply = draft["reply"]
         submit = {
             "account_id": "account-a", "locator": locator,
             "from": {"name": "Owner", "address": "owner@example.test"},
-            "to": draft["to"], "cc": [], "bcc": [],
-            "subject": draft["subject"], "body_text": draft["body_text"],
+            "to": reply["to"], "cc": [], "bcc": [],
+            "subject": reply["subject"], "body_text": reply["body_text"],
         }
         self.write_adapter_state([])
         route = f"/mail/api/v2/replies/{draft['operation_id']}/submit"
@@ -536,6 +624,7 @@ class MailV2Case(unittest.TestCase):
         status_path = f"/mail/api/v2/accounts/account-a/send-status/{draft['operation_id']}"
         status = app.handle("GET", status_path, self.authenticated_headers(cookie))
         self.assertEqual("not_submitted", loads_one(status.body)["status"])
+        self.assertTrue(loads_one(status.body)["retry_eligible"])
         self.assertEqual(0, len(self.calls_for("send")))
 
         self.write_adapter_state([message("lower-id-restored")])
@@ -560,11 +649,12 @@ class MailV2Case(unittest.TestCase):
             json.dumps({"locator": locator, "body_text": "uncertain"}),
         )
         draft = loads_one(prepared.body)
+        reply = draft["reply"]
         submit = {
             "account_id": "account-a", "locator": locator,
             "from": {"name": "Owner", "address": "owner@example.test"},
-            "to": draft["to"], "cc": [], "bcc": [], "subject": draft["subject"],
-            "body_text": draft["body_text"],
+            "to": reply["to"], "cc": [], "bcc": [], "subject": reply["subject"],
+            "body_text": reply["body_text"],
         }
         path = f"/mail/api/v2/replies/{draft['operation_id']}/submit"
         failed = app.handle("POST", path, headers, json.dumps(submit))
@@ -572,6 +662,7 @@ class MailV2Case(unittest.TestCase):
         status_path = f"/mail/api/v2/accounts/account-a/send-status/{draft['operation_id']}"
         status = app.handle("GET", status_path, self.authenticated_headers(cookie))
         self.assertEqual("unknown", loads_one(status.body)["status"])
+        self.assertFalse(loads_one(status.body)["retry_eligible"])
         again = app.handle("POST", path, headers, json.dumps(submit))
         self.assertEqual(409, again.status)
         self.assertEqual(1, len(self.calls_for("send")))
@@ -605,6 +696,7 @@ class MailV2Case(unittest.TestCase):
             self.authenticated_headers(cookie),
         )
         self.assertEqual("sent", loads_one(status.body)["status"])
+        self.assertFalse(loads_one(status.body)["retry_eligible"])
         self.assertEqual([("human-operator", "account-a", operation_id)], reconciled)
         self.assertEqual(1, len(self.calls_for("send")))
 

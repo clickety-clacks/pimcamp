@@ -178,7 +178,8 @@ class MailReplyReceipts:
         if state == "pending":
             deadline = row["claim_deadline"]
             if deadline is not None and float(deadline) <= time.time():
-                return "unknown" if row["transport_call_began"] else "not_submitted"
+                if row["transport_call_began"]:
+                    return "unknown"
             return "pending"
         if state in {"sent", "not_submitted", "unknown"}:
             return state
