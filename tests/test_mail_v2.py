@@ -400,6 +400,10 @@ class MailV2Case(unittest.TestCase):
         )
         self.assertEqual(200, prepared.status)
         draft = loads_one(prepared.body)
+        self.assertEqual(
+            ["reply-one@example.test", "reply-two@example.test"],
+            [item["address"] for item in draft["source"]["reply_to"]],
+        )
         reply = draft["reply"]
         self.assertEqual(
             ["reply-one@example.test", "reply-two@example.test"],

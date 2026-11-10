@@ -206,6 +206,7 @@ class AccountMailService:
                 "from": message["from"],
                 "to": message["to"],
                 "cc": message["cc"],
+                "reply_to": message["reply_to"],
                 "subject": message["subject"],
                 "date": message["sent_at"],
             },
