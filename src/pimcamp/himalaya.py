@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from .config import HimalayaConfig
+from .dovecot import DovecotIdentity, decode_handle
 from .diagnostics import emit
 from .errors import NotSubmittedError, PimcampError, unavailable
 from .jsonio import loads_one
@@ -44,6 +45,8 @@ class HimalayaOperationsAdapter:
         mutation: bool = False,
     ) -> Any:
         if operation == "list":
+            if payload.get("include_identity_evidence") and self.config.backend == "dovecot":
+                return self._dovecot_list(payload, deadline)
             result = self._list(payload, deadline)
             if payload.get("include_identity_evidence") and self.config.backend == "gmail":
                 result = {**result, "messages": [
@@ -57,6 +60,10 @@ class HimalayaOperationsAdapter:
         if operation == "resolve_identity":
             return self._resolve_identity(payload, deadline)
         if operation == "read":
+            if self.config.backend == "dovecot":
+                folder, uid, guid = decode_handle(payload["adapter_id"])
+                raw = DovecotIdentity(self._run_json).read(folder, uid, guid, deadline)
+                return self._parse_message(raw)
             return self._read(payload, deadline)
         if operation == "send":
             return self._send(payload, deadline)
@@ -71,7 +78,17 @@ class HimalayaOperationsAdapter:
             return self._move_to_junk(payload, deadline)
         raise PimcampError("unsupported", "The Himalaya operation is unsupported.")
 
+    def _dovecot_list(self, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        records, more = DovecotIdentity(self._run_json).list_page(
+            self.config.inbox, _page(payload.get("cursor")), payload["limit"], deadline
+        )
+        messages = [{**record, "received_at": _iso_time(record["received_at"])} for record in records]
+        return {"messages": messages, "next_cursor":
+                f"page:{_page(payload.get('cursor')) + 1}" if more else None}
+
     def _resolve_identity(self, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        if self.config.backend == "dovecot":
+            return DovecotIdentity(self._run_json).resolve(payload.get("identity_evidence"), deadline)
         if self.config.backend != "gmail":
             raise PimcampError("unsupported", "Stable identity requires the explicit Gmail backend.")
         evidence = validate_identity_evidence(payload.get("identity_evidence"))
@@ -140,8 +157,12 @@ class HimalayaOperationsAdapter:
         raw = output["message"]
         if not isinstance(raw, str):
             raise unavailable("Himalaya returned an unknown raw-message shape.")
+        return self._parse_message(raw.encode("utf-8"))
+
+    @staticmethod
+    def _parse_message(raw: bytes) -> dict[str, Any]:
         try:
-            message = BytesParser(policy=policy.default).parsebytes(raw.encode("utf-8"))
+            message = BytesParser(policy=policy.default).parsebytes(raw)
         except Exception as exc:
             raise unavailable("Himalaya returned an invalid RFC 5322 message.") from exc
         body_parts: list[dict[str, str]] = []
@@ -311,7 +332,7 @@ class HimalayaOperationsAdapter:
         if self.config.config_paths:
             command.extend(("--config", ":".join(self.config.config_paths)))
         if self.config.backend is not None:
-            command.extend(("--backend", self.config.backend))
+            command.extend(("--backend", "imap" if self.config.backend == "dovecot" else self.config.backend))
         return command
 
 
