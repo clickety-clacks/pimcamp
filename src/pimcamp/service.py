@@ -108,6 +108,11 @@ class Service:
         adapter_id = self._state().resolve_message_ref(
             self.config.operations_fingerprint, message_ref
         )
+        return self.read_adapter_message(adapter_id, deadline)
+
+    def read_adapter_message(
+        self, adapter_id: str, deadline: float | None = None
+    ) -> dict[str, Any]:
         result = self.operations.call(
             "read", {"adapter_id": adapter_id}, deadline or self._deadline()
         )

@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 import uuid
+from urllib.parse import quote
 
 from .errors import PimcampError, unavailable
 
@@ -13,8 +14,12 @@ _SCHEMA_VERSION = "pimcamp-state-v1"
 
 
 class State:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
         self.path = path
+        self.read_only = read_only
+        if read_only:
+            self._open_read_only()
+            return
         self._prepare_parent()
         existed = path.exists()
         try:
@@ -28,8 +33,105 @@ class State:
         else:
             self._create()
 
+    @classmethod
+    def open_read_only(cls, path: Path) -> "State":
+        return cls(path, read_only=True)
+
+    def _open_read_only(self) -> None:
+        try:
+            mode = self.path.stat().st_mode
+            if mode & 0o077:
+                raise unavailable("Pimcamp state is not owner-only.")
+            uri = f"file:{quote(str(self.path.resolve()))}?mode=ro"
+            self.connection = sqlite3.connect(uri, uri=True, timeout=5)
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self._verify_stamp()
+        except PimcampError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise unavailable("Pimcamp state is unavailable.") from exc
+
     def close(self) -> None:
         self.connection.close()
+
+    def ensure_mail_schema(self) -> None:
+        """Create only the additive v2 tables; leave the v1 stamp and rows intact."""
+        if self.read_only:
+            raise unavailable("Pimcamp mail state is read-only.")
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            self.connection.execute(
+                """CREATE TABLE IF NOT EXISTS mail_metadata (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                )"""
+            )
+            row = self.connection.execute(
+                "SELECT value FROM mail_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+            if row is not None and row["value"] != "pimcamp-mail-v2":
+                self.connection.execute("ROLLBACK")
+                raise unavailable("Pimcamp mail state has an unknown schema stamp.")
+            if row is None:
+                self.connection.execute(
+                    "INSERT INTO mail_metadata(key, value) VALUES ('schema_version', 'pimcamp-mail-v2')"
+                )
+                row = self.connection.execute(
+                    "SELECT value FROM mail_metadata WHERE key = 'schema_version'"
+                ).fetchone()
+            self.connection.execute(
+                """CREATE TABLE IF NOT EXISTS mail_source_references (
+                  source_ref TEXT PRIMARY KEY,
+                  account_id TEXT NOT NULL,
+                  adapter_fingerprint TEXT NOT NULL,
+                  adapter_id TEXT NOT NULL,
+                  identity_evidence_json TEXT,
+                  created_at REAL NOT NULL
+                )"""
+            )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS mail_source_refs_by_account ON mail_source_references(account_id, created_at)"
+            )
+            self.connection.execute(
+                """CREATE TABLE IF NOT EXISTS mail_locators (
+                  locator TEXT PRIMARY KEY,
+                  account_id TEXT NOT NULL,
+                  identity_namespace TEXT NOT NULL,
+                  identity_key TEXT NOT NULL,
+                  identity_evidence_json TEXT NOT NULL,
+                  created_at REAL NOT NULL,
+                  UNIQUE(account_id, identity_namespace, identity_key)
+                )"""
+            )
+            self.connection.execute(
+                """CREATE TABLE IF NOT EXISTS mail_reply_operations (
+                  operation_id TEXT PRIMARY KEY,
+                  principal_id TEXT NOT NULL,
+                  account_id TEXT NOT NULL,
+                  locator TEXT NOT NULL,
+                  request_digest TEXT,
+                  state TEXT NOT NULL CHECK (state IN ('prepared', 'pending', 'sent', 'not_submitted', 'unknown')),
+                  attempt_id TEXT,
+                  claim_deadline REAL,
+                  transport_call_began INTEGER NOT NULL DEFAULT 0 CHECK (transport_call_began IN (0, 1)),
+                  result_json TEXT,
+                  created_at REAL NOT NULL,
+                  updated_at REAL NOT NULL
+                )"""
+            )
+            self.connection.execute(
+                "CREATE INDEX IF NOT EXISTS mail_reply_ops_scope ON mail_reply_operations(principal_id, account_id, operation_id)"
+            )
+            self.connection.execute("COMMIT")
+        except PimcampError:
+            raise
+        except sqlite3.Error as exc:
+            if self.connection.in_transaction:
+                self.connection.execute("ROLLBACK")
+            raise unavailable("Pimcamp v2 mail state could not be initialized.") from exc
+        if row is None or row["value"] != "pimcamp-mail-v2":
+            raise unavailable("Pimcamp mail state has an unknown schema stamp.")
 
     def _prepare_parent(self) -> None:
         try:

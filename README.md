@@ -5,8 +5,9 @@ agents, and scripts. It gives these clients one structured seam instead of
 making them depend on a specific command-line tool, provider, or email
 protocol.
 
-Pimcamp is not an email app. It does not provide a mailbox user interface, a
-sync engine, a search index, or a general email automation platform.
+Pimcamp's seven-operation v1 boundary is not a full email app. The additive
+private v2 surface provides a message-specific reader and reply composer; it
+does not add a sync engine, search index, or general email automation platform.
 
 A generic account setup UI is included in this development tree and its installer;
 it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
@@ -127,6 +128,75 @@ The public MVP surface contains exactly seven capabilities:
 7. `subscribe_new_mail` — stream normalized new-mail observations so a client
    can retrieve authoritative state through Pimcamp.
 
+## Private message viewer API (`pimcamp.v2`)
+
+The v2 extension is separate from the seven `pimcamp.v1` operations; v1 request
+schemas and results remain unchanged. Its agent operations are `accounts`,
+`account_info`, `list_account`, and `issue_link`. V2 requests use the same
+JSON/stdio boundary with `contract_version: "pimcamp.v2"`. A client needs the
+operation grant and an explicit `account_ids` allowlist. `issue_link` accepts
+an account ID and a Pimcamp source reference returned by `list_account`. It
+returns either a linked account/locator/URL result or `cannot_link` with a
+reason and no URL. It never guesses an identity from a subject, Message-ID, or
+folder UID.
+
+The v2 operation inputs are closed objects: `accounts` takes `{}`;
+`account_info` takes `{"account_id": "…"}`; `list_account` takes
+`{"account_id": "…", "limit": 25}` and may include `cursor`; and
+`issue_link` takes `{"account_id": "…", "source_ref": "…"}`. A successful
+link result contains `status: "linked"`, `account_id`, `locator`, and an
+absolute URL. A rejected link contains `status: "cannot_link"` and a
+normalized `reason`, with no locator or URL.
+
+The browser routes are `GET /mail/m/{locator}`, `POST /mail/api/session`,
+`GET /mail/api/v2/messages/{locator}`, `POST /mail/api/v2/replies/prepare`,
+`POST /mail/api/v2/replies/{operation_id}/submit`, and `GET /mail/api/v2/accounts/{account_id}/send-status/{operation_id}`. Reply
+preparation and status lookup do not send. Only the explicit browser submit
+route can call the mail transport. Status is a read-only projection of the
+durable receipt; an optional read-only reconciler may provide an authoritative
+provider result. Without that evidence, an uncertain result remains `unknown`.
+
+The WSGI application requires an injected verifier for the existing
+authenticated operator assertion and an injected principal-to-account
+authorizer. It does not treat possession of a URL or membership in a network as
+mail authorization. The current `MailSessionStore` is in-process and volatile;
+the WSGI application is not mounted by a production server in this tree. No
+production identity verifier, account mapping, or shared session store is
+selected here.
+
+An operations command used for stable links must return `identity_evidence`
+with each listed message when `include_identity_evidence` is true. The closed
+object has `namespace`, `key`, `continuity` (`native` or `mapped`), `backend`,
+`folder`, and nullable `generation` fields. The same command must implement
+`resolve_identity` with that object and return `matches`, each containing one
+`adapter_id`. Zero matches, multiple matches, missing evidence, or unsupported
+resolution cannot produce a link. The adapter must be able to resolve the
+evidence after supported folder moves and reconnects; a subject, RFC 5322
+Message-ID, or folder-local UID alone is not evidence of that guarantee. The
+current Himalaya adapter does not implement stable identity evidence or
+resolution, so it returns `cannot_link` until such an adapter capability is
+provided. Fixture-port tests establish the contract shape, not provider
+continuity.
+
+For a browser reply, the operations adapter receives the selected `sender`
+alongside the source-derived threading context and edited composition. It must
+use that address for both the message From header and transport envelope.
+`selectable_from` is the configured authority list; setting it requires a
+deployment decision backed by account/provider evidence.
+
+`POST /mail/api/session` accepts `{}` and returns a CSRF token with an
+HttpOnly, Secure, SameSite cookie. `POST /mail/api/v2/replies/prepare` accepts
+`{"locator": "…", "body_text": "…"}` and returns the source/account context,
+verified From choices, editable recipients/subject/body, and an operation ID.
+`POST /mail/api/v2/replies/{operation_id}/submit` accepts the reviewed
+`account_id`, `locator`, `from` address object, `to`/`cc`/`bcc` address arrays,
+`subject`, and `body_text`. The server re-resolves the source and derives
+threading from it. Session creation requires the configured origin and the
+trusted upstream identity; later POSTs also require the session CSRF token.
+The message GET returns readable text parts; HTML parts are converted to
+text without executing message content or loading remote content. Send status
+returns one of `absent`, `pending`, `sent`, `not_submitted`, or `unknown`.
+
 Pimcamp is an independent project. It is not an official Pimalaya project and
 is not affiliated with or endorsed by Pimalaya.
 
@@ -179,9 +249,20 @@ may set `PIMCAMP_CONFIG` before it launches the client process. The
 configuration file, the state directory, the SQLite state file, and mutation
 lock files must be owner-only.
 
+The base configuration below is the `pimcamp.v1` shape. A v2 deployment may
+add top-level `mail_origin` (an HTTPS origin) and `mail_accounts`. Each entry in
+`mail_accounts` has `label`, `operations_adapter`, `primary_from`,
+`selectable_from`, `alias_discovery_state`, and `identity_capability`. Each
+selectable sender carries its address, authority provenance, and validity;
+only entries marked `valid` can be selected for a browser reply. Credentials
+may add `account_ids`; absent account grants mean v2 access is denied. A
+configured primary From does not by itself prove that the provider authorizes
+it for sending. Set identity capability to `unknown` until the adapter has
+evidenced a native or mapped move-stable identity.
+
 The real operations adapter targets Himalaya 2.1.0 source commit
 `bbdfb09b8b8841a509df463a80066531fb81af04` and its locked
-`pimalaya-cli 0.2.4` JSON printer. Its configuration has this closed shape:
+`pimalaya-cli 0.2.4` JSON printer. Its v1 base configuration has this shape:
 
 ```json
 {

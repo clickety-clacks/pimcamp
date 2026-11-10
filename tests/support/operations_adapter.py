@@ -28,6 +28,9 @@ def main() -> int:
     call = {"operation": operation}
     if operation == "send":
         call["threading_present"] = request.get("threading") is not None
+        call["sender"] = request.get("sender")
+    if operation == "read":
+        call["adapter_id"] = request["adapter_id"]
     with calls_path.open("a", encoding="utf-8") as calls:
         calls.write(json.dumps(call, separators=(",", ":")) + "\n")
 
@@ -43,16 +46,18 @@ def main() -> int:
             return output({"error": {"code": "invalid_request"}})
         limit = request["limit"]
         messages = state["messages"][offset : offset + limit]
-        summaries = [
-            {
+        summaries = []
+        for message in messages:
+            summary = {
                 "adapter_id": message["adapter_id"],
                 "from": message["from"],
                 "subject": message["subject"],
                 "received_at": message["received_at"],
                 "unread": message["unread"],
             }
-            for message in messages
-        ]
+            if request.get("include_identity_evidence") and "identity_evidence" in message:
+                summary["identity_evidence"] = message["identity_evidence"]
+            summaries.append(summary)
         next_offset = offset + len(messages)
         next_cursor = f"page:{next_offset}" if next_offset < len(state["messages"]) else None
         value = {"ok": {"messages": summaries, "next_cursor": next_cursor}}
@@ -60,6 +65,14 @@ def main() -> int:
             output(value)
             hang()
         return output(value)
+    if operation == "resolve_identity":
+        evidence = request["identity_evidence"]
+        matches = [
+            {"adapter_id": message["adapter_id"]}
+            for message in state["messages"]
+            if message.get("identity_evidence") == evidence
+        ]
+        return output({"ok": {"matches": matches}})
     if operation == "read":
         for message in state["messages"]:
             if message["adapter_id"] == request["adapter_id"]:

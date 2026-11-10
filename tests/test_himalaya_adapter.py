@@ -81,6 +81,39 @@ class HimalayaConstructionCase(unittest.TestCase):
         )
         self.assertNotIn("opaque-public-reference", raw.decode("ascii"))
 
+    def test_selected_sender_is_used_for_message_and_smtp_envelope(self) -> None:
+        selected = {"name": "Alias", "address": "alias@example.test"}
+        composition = {
+            "kind": "reply",
+            "to": [{"name": None, "address": "to@example.test"}],
+            "cc": [],
+            "bcc": [],
+            "subject": "Re: Boundary",
+            "body_text": "Reply",
+            "reply_to_message_ref": None,
+        }
+        calls: list[tuple[list[str], bytes | None]] = []
+
+        def capture(args: list[str], raw: bytes | None, _deadline: float, **_kwargs: object) -> dict[str, str]:
+            calls.append((args, raw))
+            return {"message": "Message successfully sent"}
+
+        with patch.object(self.adapter, "_run_json", side_effect=capture):
+            result = self.adapter._send(
+                {
+                    "composition": composition,
+                    "threading": {"message_id": "<source@example.test>", "references": []},
+                    "sender": selected,
+                    "_pimcamp_browser_reply": True,
+                },
+                time.monotonic() + 1,
+            )
+
+        self.assertEqual({"status": "sent"}, result)
+        self.assertEqual("alias@example.test", calls[0][0][3])
+        message = BytesParser(policy=policy.default).parsebytes(calls[0][1] or b"")
+        self.assertEqual("Alias <alias@example.test>", str(message["From"]))
+
 
 if __name__ == "__main__":
     unittest.main()

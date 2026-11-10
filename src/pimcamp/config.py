@@ -4,10 +4,11 @@ from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any
 
-from . import CAPABILITIES
+from . import ALL_CAPABILITIES
 from .errors import unavailable
 from .jsonio import canonical_json, loads_one
 
@@ -16,6 +17,7 @@ from .jsonio import canonical_json, loads_one
 class Client:
     identity: str
     grants: frozenset[str]
+    account_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,18 @@ class MiradorConfig:
 
 
 @dataclass(frozen=True)
+class MailAccountConfig:
+    account_id: str
+    label: str
+    operations: AdapterConfig | HimalayaConfig
+    operations_fingerprint: str
+    primary_from: dict[str, str | None] | None
+    selectable_from: tuple[dict[str, Any], ...]
+    alias_discovery_state: str
+    identity_capability: str
+
+
+@dataclass(frozen=True)
 class Config:
     credentials: dict[str, Client]
     adapter_wait_seconds: float
@@ -55,6 +69,8 @@ class Config:
     operations: AdapterConfig | HimalayaConfig
     observation: AdapterConfig | MiradorConfig
     operations_fingerprint: str
+    mail_accounts: dict[str, MailAccountConfig]
+    mail_origin: str | None
 
     def authenticate(self, credential: str) -> Client | None:
         digest = hashlib.sha256(credential.encode("utf-8")).hexdigest()
@@ -83,16 +99,27 @@ def load(path: Path | None = None) -> Config:
         raise unavailable("Pimcamp deployment configuration is unavailable.") from exc
     except Exception as exc:
         raise unavailable("Pimcamp deployment configuration is invalid.") from exc
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict) or not {
         "credentials",
         "adapter_wait_seconds",
         "state_path",
         "operations_adapter",
         "observation_adapter",
-    }:
+    }.issubset(raw) or not set(raw).issubset(
+        {
+            "credentials",
+            "adapter_wait_seconds",
+            "state_path",
+            "operations_adapter",
+            "observation_adapter",
+            "mail_accounts",
+            "mail_origin",
+        }
+    ):
         raise unavailable("Pimcamp deployment configuration is invalid.")
 
-    credentials = _credentials(raw["credentials"])
+    mail_accounts = _mail_accounts(raw.get("mail_accounts", {}))
+    credentials = _credentials(raw["credentials"], set(mail_accounts))
     wait = raw["adapter_wait_seconds"]
     if isinstance(wait, bool) or not isinstance(wait, (int, float)) or wait <= 0:
         raise unavailable("Pimcamp adapter wait bound is invalid.")
@@ -102,6 +129,7 @@ def load(path: Path | None = None) -> Config:
     operations = _adapter(raw["operations_adapter"], "operations")
     observation = _adapter(raw["observation_adapter"], "observation")
     fingerprint = hashlib.sha256(canonical_json(operations.raw)).hexdigest()
+    mail_origin = _mail_origin(raw.get("mail_origin"))
     return Config(
         credentials=credentials,
         adapter_wait_seconds=float(wait),
@@ -109,10 +137,12 @@ def load(path: Path | None = None) -> Config:
         operations=operations,
         observation=observation,
         operations_fingerprint=fingerprint,
+        mail_accounts=mail_accounts,
+        mail_origin=mail_origin,
     )
 
 
-def _credentials(value: Any) -> dict[str, Client]:
+def _credentials(value: Any, account_ids: set[str]) -> dict[str, Client]:
     if not isinstance(value, dict):
         raise unavailable("Pimcamp credential configuration is invalid.")
     clients: dict[str, Client] = {}
@@ -122,7 +152,8 @@ def _credentials(value: Any) -> dict[str, Client]:
             or len(digest) != 64
             or any(char not in "0123456789abcdef" for char in digest)
             or not isinstance(item, dict)
-            or set(item) != {"client_identity", "grants"}
+            or not {"client_identity", "grants"}.issubset(item)
+            or not set(item).issubset({"client_identity", "grants", "account_ids"})
             or not isinstance(item["client_identity"], str)
             or not item["client_identity"]
             or not isinstance(item["grants"], list)
@@ -130,10 +161,127 @@ def _credentials(value: Any) -> dict[str, Client]:
         ):
             raise unavailable("Pimcamp credential configuration is invalid.")
         grants = frozenset(item["grants"])
-        if not grants.issubset(CAPABILITIES) or len(grants) != len(item["grants"]):
+        if not grants.issubset(ALL_CAPABILITIES) or len(grants) != len(item["grants"]):
             raise unavailable("Pimcamp credential grants are invalid.")
-        clients[digest] = Client(item["client_identity"], grants)
+        raw_accounts = item.get("account_ids", [])
+        if (
+            not isinstance(raw_accounts, list)
+            or any(not isinstance(account_id, str) or not account_id for account_id in raw_accounts)
+            or len(raw_accounts) != len(set(raw_accounts))
+            or not set(raw_accounts).issubset(account_ids)
+        ):
+            raise unavailable("Pimcamp credential account access is invalid.")
+        clients[digest] = Client(item["client_identity"], grants, frozenset(raw_accounts))
     return clients
+
+
+def _mail_accounts(value: Any) -> dict[str, MailAccountConfig]:
+    if not isinstance(value, dict):
+        raise unavailable("Pimcamp mail-account configuration is invalid.")
+    accounts: dict[str, MailAccountConfig] = {}
+    for account_id, item in value.items():
+        if (
+            not isinstance(account_id, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", account_id) is None
+            or not isinstance(item, dict)
+            or set(item)
+            != {
+                "label",
+                "operations_adapter",
+                "primary_from",
+                "selectable_from",
+                "alias_discovery_state",
+                "identity_capability",
+            }
+        ):
+            raise unavailable("Pimcamp mail-account configuration is invalid.")
+        label = item["label"]
+        if not isinstance(label, str) or not label:
+            raise unavailable("Pimcamp mail-account label is invalid.")
+        operations = _adapter(item["operations_adapter"], "operations")
+        primary_from = _mail_address(item["primary_from"], optional=True)
+        selectable = item["selectable_from"]
+        if not isinstance(selectable, list):
+            raise unavailable("Pimcamp selectable sender configuration is invalid.")
+        selectable_from = tuple(_selectable_sender(sender) for sender in selectable)
+        alias_state = item["alias_discovery_state"]
+        if alias_state not in {
+            "supported-complete",
+            "supported-partial",
+            "unknown",
+            "unsupported",
+        }:
+            raise unavailable("Pimcamp sender-discovery state is invalid.")
+        identity_capability = item["identity_capability"]
+        if identity_capability not in {"native", "mapped", "unknown", "unsupported"}:
+            raise unavailable("Pimcamp identity capability is invalid.")
+        fingerprint = hashlib.sha256(canonical_json(operations.raw)).hexdigest()
+        accounts[account_id] = MailAccountConfig(
+            account_id=account_id,
+            label=label,
+            operations=operations,
+            operations_fingerprint=fingerprint,
+            primary_from=primary_from,
+            selectable_from=selectable_from,
+            alias_discovery_state=alias_state,
+            identity_capability=identity_capability,
+        )
+    return accounts
+
+
+def _mail_address(value: Any, *, optional: bool = False) -> dict[str, str | None] | None:
+    if optional and value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"name", "address"}
+        or (value["name"] is not None and not isinstance(value["name"], str))
+        or (value["name"] is not None and ("\r" in value["name"] or "\n" in value["name"]))
+        or not isinstance(value["address"], str)
+        or not _sendable_address(value["address"])
+    ):
+        raise unavailable("Pimcamp account sender is invalid.")
+    return {"name": value["name"], "address": value["address"]}
+
+
+def _selectable_sender(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"from", "provenance", "validity"}:
+        raise unavailable("Pimcamp selectable sender configuration is invalid.")
+    sender = _mail_address(value["from"])
+    provenance = value["provenance"]
+    validity = value["validity"]
+    if (
+        not isinstance(provenance, str)
+        or not provenance
+        or validity not in {"valid", "unknown", "invalid"}
+    ):
+        raise unavailable("Pimcamp selectable sender authority is invalid.")
+    return {"from": sender, "provenance": provenance, "validity": validity}
+
+
+def _mail_origin(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise unavailable("Pimcamp mail origin is invalid.")
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise unavailable("Pimcamp mail origin is invalid.") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise unavailable("Pimcamp mail origin must be an HTTPS origin.")
+    return f"https://{parsed.netloc}"
 
 
 def _adapter(
