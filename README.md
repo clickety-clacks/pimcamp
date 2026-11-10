@@ -175,13 +175,18 @@ route can call the mail transport. Status is a read-only projection of the
 durable receipt; an optional read-only reconciler may provide an authoritative
 provider result. Without that evidence, an uncertain result remains `unknown`.
 
-The WSGI application requires an injected verifier for the existing
-authenticated operator assertion and an injected principal-to-account
-authorizer. It does not treat possession of a URL or membership in a network as
-mail authorization. The current `MailSessionStore` is in-process and volatile;
-the WSGI application is not mounted by a production server in this tree. No
-production identity verifier, account mapping, or shared session store is
-selected here.
+The executable `scripts/pimcamp-mail --config /private/pimcamp/config.json --port 33282`
+mounts the WSGI application on `127.0.0.1` only, behind an existing private
+Tailscale Serve HTTPS proxy. The port is an example and must be explicitly chosen.
+The runner consumes the proxy-replaced `Tailscale-User-Login` assertion and an
+explicit server-side `mail_principals` mapping. Missing assertions or grants deny
+access; URLs, network membership and CLI credentials confer no browser grants.
+This assumes the approved private Serve ingress; the loopback listener is not a
+general-purpose header-authenticated public endpoint. It does not configure Serve
+or start a service on installation. Real proxy/login behavior remains activation
+evidence. Requests are not access-logged. Sessions are process-local and volatile;
+config/grant/address changes require a runner restart, then browser renewal.
+The runner supplies no SMTP status reconciler: uncertain sends stay unknown.
 
 An operations command used for stable links must return `identity_evidence`
 with each listed message when `include_identity_evidence` is true. The closed
@@ -192,17 +197,28 @@ object has `namespace`, `key`, `continuity` (`native` or `mapped`), `backend`,
 resolution cannot produce a link. The adapter must be able to resolve the
 evidence after supported folder moves and reconnects; a subject, RFC 5322
 Message-ID, or folder-local UID alone is not evidence of that guarantee. The
-current Himalaya adapter does not implement stable identity evidence or
-resolution, so it returns `cannot_link` until such an adapter capability is
-provided. Fixture-port tests establish the contract shape, not provider
-continuity.
+Himalaya adapter provides native identity only when explicitly configured for
+Gmail. Other backends, including generic IMAP, return `cannot_link` without
+authoritative evidence. Dovecot X-GUID same-folder lookup alone does not establish
+cross-folder, rebuild or duplicate continuity and is not enabled here.
 
 A Himalaya adapter inside `mail_accounts` may explicitly set `"backend": "gmail"`
 to pin its reads and lists to the native Gmail backend without Auto/IMAP fallback.
-The v1 top-level adapter schema is unchanged. This selector alone does not prove
-account identity or enable stable links: the concrete Himalaya resolver remains
-unsupported until an authoritative account binding is available. Native private-
-port fixtures are application evidence, not real Gmail account acceptance.
+Configure `identity_capability: "native"` and the account's `address` alongside
+that selector. Listed native IDs receive evidence; resolution uses direct Gmail
+metadata lookup and subsequent raw reads use that same backend. The original
+folder is not used as durable identity. Initial listing still covers the configured
+collection, not an account-wide search. Lower lookup failures remain unavailable
+unless positively classified; they are not guessed to mean deletion.
+The v1 top-level adapter schema and default behavior remain unchanged.
+
+Locators bind to the stable local account ID plus configured `address`, separately
+from editable reply From choices. Changing that address under an ID makes old
+locators fail clearly with `conflict` before adapter I/O; old source references
+return URL-free `cannot_link`. A missing address cannot issue links. Earlier v2
+locators without this binding also fail clearly and must be regenerated from an
+authoritative source. No profile/incarnation lookup or identity fallback is used.
+Isolated native fixtures are application evidence, not real provider acceptance.
 
 For a browser reply, the operations adapter receives the selected `sender`
 alongside the source-derived threading context and edited composition. It must
@@ -311,9 +327,14 @@ configuration file, the state directory, the SQLite state file, and mutation
 lock files must be owner-only.
 
 The base configuration below is the `pimcamp.v1` shape. A v2 deployment may
-add top-level `mail_origin` (an HTTPS origin) and `mail_accounts`. Each entry in
+add top-level `mail_origin` (an HTTPS origin), `mail_accounts` and `mail_principals`.
+The last is an explicit map of one approved operator login to approved local
+account IDs, for example `{"operator@example.test": ["account-a", "account-b"]}`;
+no mapping means no browser access, and unknown account IDs are rejected.
+Each entry in
 `mail_accounts` has `label`, `operations_adapter`, `primary_from`,
-`selectable_from`, `alias_discovery_state`, and `identity_capability`. Each
+`selectable_from`, `alias_discovery_state`, and `identity_capability`; stable links
+also require its configured `address`. Each
 selectable sender carries its address, authority provenance, and validity;
 only entries marked `valid` can be selected for a browser reply. Credentials
 may add `account_ids`; absent account grants mean v2 access is denied. A

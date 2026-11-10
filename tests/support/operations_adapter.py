@@ -97,6 +97,12 @@ def main() -> int:
             return output({"ok": {"status": "sent"}})
         if selected == "lost_response":
             return 0
+        if selected == "accepted_then_timeout":
+            # Controlled fixture transport acceptance is recorded before its
+            # reply stalls; the application cannot infer this private fact.
+            state["accepted_submissions"] = state.get("accepted_submissions", 0) + 1
+            state_path.write_text(json.dumps(state))
+            hang()
         if selected == "hang":
             hang()
         if selected in {"pause_success", "crash_pause"}:

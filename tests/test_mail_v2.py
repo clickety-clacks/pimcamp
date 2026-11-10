@@ -101,6 +101,7 @@ class MailV2Case(unittest.TestCase):
         accounts = {
             account_id: {
                 "label": f"Fixture {account_id}",
+                "address": f"{account_id}@example.test",
                 "operations_adapter": {"kind": "command", "command": command},
                 "primary_from": {"name": "Owner", "address": "owner@example.test"},
                 "selectable_from": selectable_from,
