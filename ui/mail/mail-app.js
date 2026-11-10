@@ -624,8 +624,13 @@
       } else {
         state.draft.operation_status = "unknown";
         state.draft.retry_eligible = false;
-        showComposerMessage(publicError({ code: "status_unavailable" }), "error");
         showDraftState("Send outcome unknown", "error");
+        if (error?.status === 403 && error?.code === "permission_denied") {
+          hidePrivateContent();
+          setGate("Mail account unavailable", publicError(error), "retry");
+        } else {
+          showComposerMessage(publicError({ code: "status_unavailable" }), "error");
+        }
         await queueSave();
       }
     } finally {

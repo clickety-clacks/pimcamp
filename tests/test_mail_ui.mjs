@@ -487,8 +487,8 @@ test("mail session activity renews only idle deadline and logout requires a 204 
 
 test("mail client preserves flat v2 errors and distinguishes expired sessions from permission denial", async () => {
   const errors = [
-    { contract_version: "2", code: "session_expired", retryable: false, message: "Continue mail session." },
-    { contract_version: "2", code: "permission_denied", retryable: false, message: "This account is unavailable." }
+    { contract_version: "pimcamp.v2", code: "session_expired", retryable: false, message: "Continue mail session." },
+    { contract_version: "pimcamp.v2", code: "permission_denied", retryable: false, message: "This account is unavailable." }
   ];
   const statuses = [401, 403];
   const client = mailClient.createMailClient({
@@ -499,11 +499,11 @@ test("mail client preserves flat v2 errors and distinguishes expired sessions fr
   const denied = await client.getMessage("loc-1").catch(error => error);
   assert.equal(expired.code, "session_expired");
   assert.equal(expired.status, 401);
-  assert.equal(expired.contractVersion, "2");
+  assert.equal(expired.contractVersion, "pimcamp.v2");
   assert.equal(expired.retryable, false);
   assert.equal(denied.code, "permission_denied");
   assert.equal(denied.status, 403);
-  assert.equal(denied.contractVersion, "2");
+  assert.equal(denied.contractVersion, "pimcamp.v2");
   assert.equal(denied.retryable, false);
 });
 
@@ -1002,6 +1002,30 @@ test("403 permission denial stays an authorization error and does not offer sess
   assert.equal(app.elements.get("retry-open").hidden, false);
   assert.equal(app.elements.get("mail-view").hidden, true);
   assert.equal(app.calls.session.length, 1);
+});
+
+test("403 permission denial during status lookup hides private content and is not mislabeled as unavailable status", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-status-denied",
+    from_choices: [choice], from: choice, to: [{ address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Preserve this reply", operation_id: "op-status-denied",
+    operation_status: "pending", operation_attempted: true
+  });
+  const denied = Object.assign(new Error("fixture authorization denial"), { status: 403, code: "permission_denied" });
+  const app = mailAppFixture({ storedDraft, statuses: [denied] });
+  await app.settle();
+
+  assert.equal(app.elements.get("gate-title").textContent, "Mail account unavailable");
+  assert.match(app.elements.get("gate-message").textContent, /not available to the current session/);
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.elements.get("source-body").textContent, "");
+  assert.equal(app.savedDraft.operation_id, "op-status-denied");
+  assert.equal(app.savedDraft.body_text, "Preserve this reply");
+  assert.equal(app.savedDraft.operation_status, "unknown");
+  assert.equal(app.elements.get("send-reply").disabled, true);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.elements.get("continue-session").hidden, true);
 });
 
 test("expired activity never submits and renewal checks the same operation before a later explicit send", async () => {
