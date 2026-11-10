@@ -9,11 +9,10 @@
   <meta name="description" content="Private Pimcamp message viewer and reply composer.">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'">
   <title>Reply to a message · Pimcamp</title>
-  <link rel="stylesheet" href="/mail/assets/styles.css">
+  <link rel="stylesheet" href="/mail/assets/mail.css">
   <script src="/mail/assets/mail-text.js" defer></script>
   <script src="/mail/assets/mail-client.js" defer></script>
   <script src="/mail/assets/mail-drafts.js" defer></script>
-  <script src="/mail/assets/mail-state.js" defer></script>
   <script src="/mail/assets/mail-app.js" defer></script>
 </head>
 <body>
@@ -71,6 +70,10 @@
             <div id="source-cc-row" class="message-meta__row" hidden>
               <dt>Cc</dt>
               <dd id="source-cc"></dd>
+            </div>
+            <div id="source-reply-to-row" class="message-meta__row" hidden>
+              <dt>Reply-To</dt>
+              <dd id="source-reply-to"></dd>
             </div>
             <div class="message-meta__row">
               <dt>Date</dt>

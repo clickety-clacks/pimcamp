@@ -22,6 +22,14 @@
     return encodeURIComponent(value);
   }
 
+  function invalidResponse() {
+    return new MailApiError("invalid_response", "Pimcamp returned an unreadable response.");
+  }
+
+  function isObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
   function createMailClient({ fetchImpl = globalThis.fetch, csrfToken = "" } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("A fetch implementation is required.");
     let csrf = typeof csrfToken === "string" ? csrfToken : "";
@@ -68,18 +76,43 @@
 
     return {
       setCsrfToken(value) { csrf = typeof value === "string" ? value : ""; },
-      openSession() {
-        return request("/mail/api/session", { method: "POST", body: {} });
+      async openSession() {
+        const payload = await request("/mail/api/session", { method: "POST", body: {} });
+        const accounts = payload.accounts;
+        if (payload.status !== "authenticated" || typeof payload.principal_id !== "string" || !payload.principal_id ||
+            typeof payload.csrf_token !== "string" || !payload.csrf_token || !Array.isArray(accounts) || !accounts.length ||
+            accounts.some(account => !isObject(account) || typeof account.account_id !== "string" || !account.account_id ||
+              typeof account.label !== "string" || !account.label)) {
+          throw invalidResponse();
+        }
+        return payload;
       },
-      getMessage(locator) {
-        return request(`/mail/api/v2/messages/${segment(locator)}`);
+      async getMessage(locator) {
+        const payload = await request(`/mail/api/v2/messages/${segment(locator)}`);
+        if (payload.locator !== locator || typeof payload.account_id !== "string" || !payload.account_id ||
+            typeof payload.account_label !== "string" || !payload.account_label || !isObject(payload.source) ||
+            !Array.isArray(payload.body_parts)) {
+          throw invalidResponse();
+        }
+        return payload;
       },
-      prepareReply(locator, bodyText) {
-        return request("/mail/api/v2/replies/prepare", {
+      async prepareReply(locator, bodyText) {
+        const payload = await request("/mail/api/v2/replies/prepare", {
           method: "POST", needsCsrf: true, body: { locator, body_text: String(bodyText ?? "") }
         });
+        const reply = payload.reply;
+        if (typeof payload.operation_id !== "string" || !payload.operation_id ||
+            typeof payload.account_id !== "string" || !payload.account_id || payload.locator !== locator ||
+            typeof payload.account_label !== "string" || !payload.account_label || !isObject(payload.source) ||
+            !isObject(reply) || !Array.isArray(reply.from_choices) || !Object.prototype.hasOwnProperty.call(reply, "selected_from") ||
+            (reply.selected_from !== null && !isObject(reply.selected_from)) ||
+            !Array.isArray(reply.to) || !Array.isArray(reply.cc) || !Array.isArray(reply.bcc) ||
+            typeof reply.subject !== "string" || typeof reply.body_text !== "string") {
+          throw invalidResponse();
+        }
+        return payload;
       },
-      submitReply(operationId, reviewedReply) {
+      async submitReply(operationId, reviewedReply) {
         const id = segment(operationId);
         const fields = {
           account_id: reviewedReply.account_id,
@@ -91,12 +124,22 @@
           subject: reviewedReply.subject,
           body_text: reviewedReply.body_text
         };
-        return request(`/mail/api/v2/replies/${id}/submit`, {
+        const payload = await request(`/mail/api/v2/replies/${id}/submit`, {
           method: "POST", needsCsrf: true, body: fields
         });
+        if (typeof payload.status !== "string" ||
+            (payload.operation_id !== undefined && payload.operation_id !== operationId)) {
+          throw invalidResponse();
+        }
+        return payload;
       },
-      sendStatus(accountId, operationId) {
-        return request(`/mail/api/v2/accounts/${segment(accountId)}/send-status/${segment(operationId)}`);
+      async sendStatus(accountId, operationId) {
+        const payload = await request(`/mail/api/v2/accounts/${segment(accountId)}/send-status/${segment(operationId)}`);
+        if (payload.account_id !== accountId || payload.operation_id !== operationId ||
+            typeof payload.status !== "string" || typeof payload.retry_eligible !== "boolean") {
+          throw invalidResponse();
+        }
+        return payload;
       }
     };
   }

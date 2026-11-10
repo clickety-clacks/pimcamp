@@ -17,6 +17,7 @@
     principalId: "",
     sourceSubject: "",
     accountId: "",
+    authorizedAccounts: new Map(),
     draft: null,
     formBound: false,
     fromChoices: [],
@@ -119,23 +120,27 @@
   }
 
   function renderMessage(payload) {
-    const account = payload?.account && typeof payload.account === "object" ? payload.account : {};
-    const source = payload?.source && typeof payload.source === "object" ? payload.source : payload;
-    const accountId = payload?.account_id || account.account_id;
-    if (typeof accountId !== "string" || !accountId || !source || typeof source !== "object") {
+    const source = payload?.source;
+    const accountId = payload?.account_id;
+    const account = state.authorizedAccounts.get(accountId);
+    if (typeof accountId !== "string" || !accountId || payload?.locator !== state.locator || !account ||
+        typeof payload.account_label !== "string" || payload.account_label !== account.label || !source || typeof source !== "object") {
       throw new Error("The message response is incomplete.");
     }
     state.sourceSubject = typeof source.subject === "string" ? source.subject : "";
     state.accountId = accountId;
-    byId("account-badge").textContent = `Account · ${payload.account_label || account.label || accountId}`;
+    byId("account-badge").textContent = `Account · ${account.label}`;
     appendTextLines(byId("source-from"), source.from);
     appendTextLines(byId("source-to"), source.to);
     const cc = Array.isArray(source.cc) ? source.cc : source.cc ? [source.cc] : [];
     byId("source-cc-row").hidden = cc.length === 0;
     appendTextLines(byId("source-cc"), cc);
+    const replyTo = Array.isArray(source.reply_to) ? source.reply_to : source.reply_to ? [source.reply_to] : [];
+    byId("source-reply-to-row").hidden = replyTo.length === 0;
+    appendTextLines(byId("source-reply-to"), replyTo);
     byId("source-date").textContent = source.sent_at || source.received_at || source.date || "Date unavailable";
     byId("source-subject").textContent = typeof source.subject === "string" ? source.subject : "(No subject)";
-    const body = textTools.sourceText(source);
+    const body = textTools.sourceText(payload);
     byId("source-body").textContent = body || "No readable message text is available.";
   }
 
@@ -172,7 +177,12 @@
       select.add(option);
     }
     const selected = selectFrom(draft.from, state.fromChoices);
-    select.value = selected?.address || "";
+    if (draft.from && !selected && typeof draft.from.address === "string") {
+      const option = new Option(`Unavailable: ${formatAddress(draft.from)}`, draft.from.address);
+      option.disabled = true;
+      select.add(option);
+    }
+    select.value = selected?.address || (draft.from?.address || "");
     if (draft.from && !selected) {
       byId("from-help").textContent = "The saved From identity is no longer available. Choose a current verified identity; your text is preserved.";
     } else if (state.fromChoices.length > 1 && !selected) {
@@ -194,8 +204,10 @@
 
   function syncDraftFromForm() {
     if (!state.draft) return;
-    const from = state.fromChoices.find(choice => choice.address === byId("reply-from").value) || null;
-    state.draft.from = from ? { name: singleLine(from.name) || null, address: from.address } : null;
+    const selectedFrom = byId("reply-from").value;
+    const from = state.fromChoices.find(choice => choice.address === selectedFrom) || null;
+    if (from) state.draft.from = { name: singleLine(from.name) || null, address: from.address };
+    else if (state.draft.from?.address !== selectedFrom) state.draft.from = null;
     state.draft.to = parseAddressLines(byId("reply-to").value);
     state.draft.cc = parseAddressLines(byId("reply-cc").value);
     state.draft.bcc = parseAddressLines(byId("reply-bcc").value);
@@ -207,7 +219,8 @@
 
   function updateReview() {
     const from = state.fromChoices.find(choice => choice.address === byId("reply-from").value);
-    byId("review-from").textContent = formatAddress(from) || "Choose a verified From address";
+    const savedFrom = state.draft?.from?.address === byId("reply-from").value ? state.draft.from : null;
+    byId("review-from").textContent = formatAddress(from) || (savedFrom ? `${formatAddress(savedFrom)} (unavailable)` : "Choose a verified From address");
     byId("review-to").textContent = byId("reply-to").value.trim() || "No recipient";
     byId("review-cc").textContent = byId("reply-cc").value.trim() || "None";
     byId("review-bcc").textContent = byId("reply-bcc").value.trim() || "None";
@@ -219,6 +232,8 @@
     return !mailState.canSubmit({
       status: state.draft?.operation_status,
       operationId: state.draft?.operation_id,
+      retryEligible: state.draft?.retry_eligible,
+      operationAttempted: state.draft?.operation_attempted,
       prepared: state.prepared,
       storageReady: state.storageReady,
       busy: state.submitting || state.reconciling
@@ -226,9 +241,12 @@
   }
 
   function updateFormAvailability() {
-    const editable = !state.submitting && !state.reconciling && mailState.canEditDraft(
-      state.draft?.operation_status, state.draft?.operation_id
-    );
+    const editable = !state.submitting && !state.reconciling && mailState.canEditDraft({
+      status: state.draft?.operation_status,
+      operationId: state.draft?.operation_id,
+      retryEligible: state.draft?.retry_eligible,
+      operationAttempted: state.draft?.operation_attempted
+    });
     for (const control of form.elements) {
       if (control.id !== "send-reply") control.disabled = !editable;
     }
@@ -237,7 +255,8 @@
   function updateSendButton() {
     const button = byId("send-reply");
     if (!button || !state.draft) return;
-    const retry = state.draft.operation_status === "not_submitted";
+    const retry = state.draft.operation_attempted === true && state.draft.operation_status === "not_submitted" &&
+      state.draft.retry_eligible === true;
     button.textContent = retry ? "Retry send" : "Send reply";
     const valid = Boolean(byId("reply-from").value && byId("reply-to").value.trim() && byId("reply-subject").value.trim());
     button.disabled = statusBlocksSubmit() || !valid;
@@ -273,10 +292,11 @@
     });
   }
 
-  function handleOperationStatus(status) {
+  function handleOperationStatus(status, retryEligible = false) {
     const normalized = mailState.normalizeStatus(status);
     state.draft.operation_status = normalized;
-    state.draft.operation_attempted = true;
+    state.draft.retry_eligible = normalized === "not_submitted" && retryEligible === true;
+    if (["sent", "pending", "unknown"].includes(normalized)) state.draft.operation_attempted = true;
     if (normalized === "sent") {
       state.draft.from = null;
       state.draft.to = [];
@@ -287,10 +307,17 @@
       composerCard.dataset.state = "sent";
       showComposerMessage("Pimcamp confirmed submission. Delivery is not confirmed.", "success");
       showDraftState("Submitted", "saved");
-    } else if (normalized === "not_submitted") {
+    } else if (normalized === "not_submitted" && state.draft.retry_eligible && state.draft.operation_attempted) {
       composerCard.dataset.state = "ready";
       showComposerMessage("Pimcamp confirmed this operation did not submit. Review the reply and explicitly retry if you still want to send it.");
       showDraftState("Draft saved; safe retry is available", "saved");
+    } else if (normalized === "not_submitted" && state.draft.retry_eligible) {
+      composerCard.dataset.state = "ready";
+      showComposerMessage("The reply is prepared but has not been sent. Review it, then choose Send reply if you want to submit it.");
+      showDraftState("Draft saved; ready for your review", "saved");
+    } else if (normalized === "not_submitted") {
+      showComposerMessage("Pimcamp has not confirmed that this operation is eligible for retry. Keep this operation; do not retry.", "error");
+      showDraftState("Retry eligibility not confirmed", "error");
     } else if (normalized === "pending") {
       showComposerMessage("Pimcamp has not confirmed completion yet. Keep this draft; do not retry.");
       showDraftState("Send status pending");
@@ -322,12 +349,13 @@
     updateSendButton();
     try {
       const result = await client.sendStatus(state.accountId, state.draft.operation_id);
-      await handleOperationStatus(result.status);
+      await handleOperationStatus(result.status, result.retry_eligible);
     } catch (error) {
       if (isSessionError(error)) {
         await requireRenewal();
       } else {
         state.draft.operation_status = "unknown";
+        state.draft.retry_eligible = false;
         showComposerMessage(publicError({ code: "status_unavailable" }), "error");
         showDraftState("Send outcome unknown", "error");
         await queueSave();
@@ -353,44 +381,48 @@
     if (memoryDraft) stored = memoryDraft;
 
     let prepared = null;
-    try {
-      prepared = await client.prepareReply(state.locator, stored?.body_text || "");
-      const preparedAccount = prepared.account_id || prepared.account?.account_id;
-      const preparedSource = prepared.source || prepared.message;
-      const preparedLocator = prepared.locator || preparedSource?.locator;
-      if (preparedAccount !== state.accountId || (preparedLocator && preparedLocator !== state.locator)) {
-        prepared = null;
-        throw new Error("The reply account did not match the source account.");
-      }
+    if (stored?.operation_id) {
       state.prepared = true;
-    } catch (error) {
-      if (isSessionError(error)) {
-        await requireRenewal();
-        return;
+      state.fromChoices = choicesFrom(stored.from_choices);
+    } else {
+      try {
+        prepared = await client.prepareReply(state.locator, stored?.body_text || "");
+        if (prepared.account_id !== state.accountId || prepared.locator !== state.locator) {
+          prepared = null;
+          throw new Error("The reply account did not match the source account.");
+        }
+        state.prepared = true;
+      } catch (error) {
+        if (isSessionError(error)) {
+          await requireRenewal();
+          return;
+        }
+        state.prepared = false;
+        showNotice(publicError(error), "error");
       }
-      state.prepared = false;
-      showNotice(publicError(error), "error");
     }
 
-    const reply = prepared?.reply && typeof prepared.reply === "object" ? prepared.reply : prepared || {};
-    state.fromChoices = choicesFrom(reply);
+    const reply = prepared?.reply && typeof prepared.reply === "object" ? prepared.reply : {};
+    if (!stored?.operation_id) state.fromChoices = choicesFrom(reply);
     const savedFrom = stored?.from || null;
-    const selectedFrom = selectFrom(savedFrom, state.fromChoices);
+    const chosenFrom = mailState.choosePreparedFrom(savedFrom, reply.selected_from, state.fromChoices);
     const draft = {
       principal_id: state.principalId,
       account_id: state.accountId,
       locator: state.locator,
       draft_id: stored?.draft_id || uuid(),
-      from: selectedFrom || (stored?.from && !state.prepared ? stored.from : null),
+      from_choices: state.fromChoices,
+      from: chosenFrom || stored?.from || null,
       to: Array.isArray(stored?.to) ? stored.to : (reply.to || []),
       cc: Array.isArray(stored?.cc) ? stored.cc : (reply.cc || []),
       bcc: Array.isArray(stored?.bcc) ? stored.bcc : (reply.bcc || []),
       subject: typeof stored?.subject === "string" ? stored.subject : (reply.subject || ""),
       body_text: typeof stored?.body_text === "string" ? stored.body_text : (reply.body_text || ""),
-      operation_id: stored?.operation_id || null,
+      operation_id: stored?.operation_id || prepared?.operation_id || null,
       operation_status: stored?.operation_id
         ? mailState.normalizeStatus(stored.operation_status || "unknown")
         : null,
+      retry_eligible: false,
       operation_attempted: Boolean(stored?.operation_attempted)
     };
     if (!draft.subject && state.sourceSubject) {
@@ -402,7 +434,7 @@
 
     if (state.prepared && state.storageReady) await queueSave();
     else if (!state.storageReady) showDraftState("Draft recovery unavailable; keep this page open", "error");
-    if (stored?.operation_id) await querySendStatus();
+    if (state.draft.operation_id) await querySendStatus();
   }
 
   async function loadMessage() {
@@ -431,13 +463,22 @@
   }
 
   async function acceptSession(payload) {
-    const principal = payload.principal_id || payload.principal_namespace;
-    const csrf = payload.csrf_token || payload.csrf;
-    if (typeof principal !== "string" || !principal || typeof csrf !== "string" || !csrf) {
+    if (payload.status !== "authenticated" || typeof payload.principal_id !== "string" || !payload.principal_id ||
+        typeof payload.csrf_token !== "string" || !payload.csrf_token || !Array.isArray(payload.accounts) ||
+        !payload.accounts.length) {
       throw new Error("The mail session response is incomplete.");
     }
-    state.principalId = principal;
-    client.setCsrfToken(csrf);
+    const accounts = new Map();
+    for (const account of payload.accounts) {
+      if (!account || typeof account.account_id !== "string" || !account.account_id ||
+          typeof account.label !== "string" || !account.label || accounts.has(account.account_id)) {
+        throw new Error("The mail session response is incomplete.");
+      }
+      accounts.set(account.account_id, account);
+    }
+    state.principalId = payload.principal_id;
+    state.authorizedAccounts = accounts;
+    client.setCsrfToken(payload.csrf_token);
   }
 
   async function requireRenewal() {
@@ -453,6 +494,8 @@
     byId("source-to").replaceChildren();
     byId("source-cc").replaceChildren();
     byId("source-cc-row").hidden = true;
+    byId("source-reply-to").replaceChildren();
+    byId("source-reply-to-row").hidden = true;
     byId("source-date").textContent = "";
     byId("source-subject").textContent = "";
     byId("source-body").textContent = "";
@@ -467,6 +510,7 @@
     state.formBound = false;
     state.sourceSubject = "";
     state.accountId = "";
+    state.authorizedAccounts = new Map();
     state.prepared = false;
     state.storageReady = false;
     state.fromChoices = [];
@@ -513,19 +557,22 @@
     };
     const previousOperationId = state.draft.operation_id;
     const previousOperationStatus = state.draft.operation_status;
+    const previousRetryEligible = state.draft.retry_eligible;
     const previousAttempted = state.draft.operation_attempted;
     state.submitting = true;
     updateSendButton();
     showComposerMessage("Submitting the reviewed reply…");
     try {
       if (!(await queueSave())) return;
-      const operationId = mailState.operationIdForAttempt(previousOperationId, previousOperationStatus, uuid);
+      const operationId = mailState.operationIdForAttempt(previousOperationId);
       state.draft.operation_id = operationId;
       state.draft.operation_status = "sending";
+      state.draft.retry_eligible = false;
       state.draft.operation_attempted = true;
       if (!(await queueSave())) {
         state.draft.operation_id = previousOperationId;
         state.draft.operation_status = previousOperationStatus;
+        state.draft.retry_eligible = previousRetryEligible;
         state.draft.operation_attempted = previousAttempted;
         updateSendButton();
         return;
@@ -534,15 +581,17 @@
       try {
         const result = await client.submitReply(operationId, reviewedReply);
         const status = mailState.normalizeStatus(result.status);
-        await handleOperationStatus(status);
-        if (["pending", "unknown", "absent"].includes(status)) await querySendStatus();
+        await handleOperationStatus(status, false);
+        if (status !== "sent") await querySendStatus();
       } catch (error) {
         if (isSessionError(error)) {
           state.draft.operation_status = "unknown";
+          state.draft.retry_eligible = false;
           await queueSave();
           await requireRenewal();
         } else {
           state.draft.operation_status = "unknown";
+          state.draft.retry_eligible = false;
           state.draft.operation_attempted = true;
           showComposerMessage(publicError(error), "error");
           await queueSave();

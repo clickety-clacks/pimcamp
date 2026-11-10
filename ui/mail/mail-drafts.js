@@ -1,12 +1,54 @@
 (function (root, factory) {
   const api = factory();
   if (typeof module === "object" && module.exports) module.exports = api;
-  else root.PimcampMailDrafts = api;
+  else {
+    root.PimcampMailDrafts = api;
+    root.PimcampMailState = api.state;
+  }
 })(globalThis, function () {
   "use strict";
 
   const databaseName = "pimcamp-mail-drafts-v1";
   const storeName = "drafts";
+  const statuses = new Set(["absent", "pending", "sent", "not_submitted", "unknown"]);
+
+  function normalizeStatus(status) {
+    return statuses.has(status) ? status : "unknown";
+  }
+
+  function canEditDraft({ status, operationId, retryEligible = false, operationAttempted = false }) {
+    if (operationAttempted) return false;
+    if (!operationId) return status == null || status === "";
+    return status === "not_submitted" && retryEligible === true;
+  }
+
+  function canSubmit({ status, operationId, retryEligible = false, prepared, storageReady, busy }) {
+    if (!prepared || !storageReady || busy || typeof operationId !== "string" || !operationId) return false;
+    return status === "not_submitted" && retryEligible === true;
+  }
+
+  function operationIdForAttempt(preparedOperationId) {
+    if (typeof preparedOperationId !== "string" || !preparedOperationId) {
+      throw new TypeError("A prepared operation ID is required.");
+    }
+    return preparedOperationId;
+  }
+
+  function chooseFrom(preferred, choices) {
+    if (preferred?.address) {
+      return choices.find(choice => choice?.address && choice.address.toLowerCase() === preferred.address.toLowerCase()) || null;
+    }
+    return choices.length === 1 ? choices[0] : null;
+  }
+
+  function choosePreparedFrom(savedChoice, serverChoice, choices) {
+    const saved = chooseFrom(savedChoice, choices);
+    if (saved) return saved;
+    if (choices.length !== 1) return null;
+    return chooseFrom(serverChoice, choices) || choices[0];
+  }
+
+  const state = { canEditDraft, canSubmit, chooseFrom, choosePreparedFrom, normalizeStatus, operationIdForAttempt };
 
   class DraftStorageError extends Error {
     constructor(message = "Draft recovery is unavailable in this browser.") {
@@ -33,7 +75,17 @@
     return Array.isArray(values) ? values.map(copyAddress).filter(Boolean) : [];
   }
 
-  // Explicitly whitelist draft fields; source bodies, credentials, cookies and CSRF never enter storage.
+  function copyFromChoice(value) {
+    const address = copyAddress(value);
+    if (!address) return null;
+    return {
+      ...address,
+      provenance: typeof value.provenance === "string" ? value.provenance : "",
+      validity: typeof value.validity === "string" ? value.validity : ""
+    };
+  }
+
+  // Explicitly whitelist reviewed values and verified sender choices; source bodies and credentials stay out of storage.
   function createDraftRecord(draft, now = Date.now()) {
     const key = keyFor(draft.principal_id, draft.account_id, draft.locator);
     return {
@@ -42,6 +94,7 @@
       account_id: draft.account_id,
       locator: draft.locator,
       draft_id: typeof draft.draft_id === "string" ? draft.draft_id : "",
+      from_choices: Array.isArray(draft.from_choices) ? draft.from_choices.map(copyFromChoice).filter(Boolean) : [],
       from: copyAddress(draft.from),
       to: copyAddresses(draft.to),
       cc: copyAddresses(draft.cc),
@@ -117,5 +170,5 @@
     };
   }
 
-  return { DraftStorageError, createDraftRecord, createDraftStore, keyFor };
+  return { DraftStorageError, createDraftRecord, createDraftStore, keyFor, ...state, state };
 });

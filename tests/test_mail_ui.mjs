@@ -9,15 +9,16 @@ const require = createRequire(import.meta.url);
 const mailText = require("../ui/mail/mail-text.js");
 const mailClient = require("../ui/mail/mail-client.js");
 const mailDrafts = require("../ui/mail/mail-drafts.js");
-const mailState = require("../ui/mail/mail-state.js");
+const mailState = mailDrafts;
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 test("page references only locally provided same-origin assets", () => {
   const html = readFileSync(new URL("../ui/mail/index.html", import.meta.url), "utf8");
   const assets = [...html.matchAll(/(?:src|href)="\/mail\/assets\/([^\"]+)"/g)].map(match => match[1]);
-  assert.ok(assets.length > 0);
+  assert.deepEqual(assets.sort(), ["mail-app.js", "mail-client.js", "mail.css", "mail-drafts.js", "mail-text.js"].sort());
   for (const asset of assets) assert.equal(existsSync(join(projectRoot, "ui", "mail", asset)), true, asset);
   assert.match(html, /img-src 'none'/);
+  assert.match(html, /id="source-reply-to-row"/);
   const form = html.match(/<form\b[^>]*>([\s\S]*?)<\/form>/)?.[1] || "";
   assert.doesNotMatch(form, /\bname=/);
 });
@@ -101,10 +102,18 @@ test("source text prefers a plain part and falls back to HTML extraction", () =>
 test("mail client uses the agreed same-origin routes and read-only status lookup", async () => {
   const calls = [];
   const responses = [
-    { principal_id: "principal-1", csrf_token: "csrf-fixture" },
-    { account_id: "account-1", source: { subject: "Fixture" } },
-    { account_id: "account-1", reply: { from_choices: [] } },
-    { status: "unknown" }
+    { status: "authenticated", principal_id: "principal-1", csrf_token: "csrf-fixture", accounts: [{ account_id: "account-1", label: "Work" }] },
+    {
+      account_id: "account-1", account_label: "Work", locator: "opaque locator",
+      source: { from: [], to: [], cc: [], reply_to: [], subject: "Fixture", date: "2026-11-10T00:00:00Z" },
+      body_parts: [{ media_type: "text/plain", content_utf8: "Source body" }]
+    },
+    {
+      operation_id: "33333333-3333-4333-8333-333333333333", account_id: "account-1", account_label: "Work", locator: "opaque locator",
+      source: { from: [], to: [], cc: [], subject: "Fixture", date: "2026-11-10T00:00:00Z" },
+      reply: { from_choices: [], selected_from: null, to: [], cc: [], bcc: [], subject: "Re: Fixture", body_text: "draft text" }
+    },
+    { account_id: "account-1", operation_id: "33333333-3333-4333-8333-333333333333", status: "unknown", retry_eligible: false }
   ];
   const client = mailClient.createMailClient({
     csrfToken: "csrf-fixture",
@@ -114,24 +123,39 @@ test("mail client uses the agreed same-origin routes and read-only status lookup
     }
   });
 
-  await client.openSession();
-  await client.getMessage("opaque locator");
-  await client.prepareReply("opaque locator", "draft text");
-  const status = await client.sendStatus("account one", "operation one");
+  const session = await client.openSession();
+  const message = await client.getMessage("opaque locator");
+  const prepared = await client.prepareReply("opaque locator", "draft text");
+  const status = await client.sendStatus("account-1", "33333333-3333-4333-8333-333333333333");
 
+  assert.equal(session.status, "authenticated");
+  assert.equal(session.accounts[0].label, "Work");
+  assert.deepEqual(message.source.reply_to, []);
+  assert.equal(mailText.sourceText(message), "Source body");
+  assert.equal(prepared.reply.selected_from, null);
+  assert.equal(prepared.operation_id, "33333333-3333-4333-8333-333333333333");
   assert.equal(status.status, "unknown");
+  assert.equal(status.retry_eligible, false);
   assert.deepEqual(calls.map(call => [call.options.method, call.path]), [
     ["POST", "/mail/api/session"],
     ["GET", "/mail/api/v2/messages/opaque%20locator"],
     ["POST", "/mail/api/v2/replies/prepare"],
-    ["GET", "/mail/api/v2/accounts/account%20one/send-status/operation%20one"]
+    ["GET", "/mail/api/v2/accounts/account-1/send-status/33333333-3333-4333-8333-333333333333"]
   ]);
   assert.equal(calls[0].options.credentials, "same-origin");
   assert.equal(calls[0].options.cache, "no-store");
   assert.equal(calls[2].options.headers["X-Pimcamp-CSRF"], "csrf-fixture");
   assert.deepEqual(JSON.parse(calls[2].options.body), { locator: "opaque locator", body_text: "draft text" });
   assert.ok(calls.every(call => !call.path.endsWith("/submit")));
-  assert.throws(() => client.getMessage("bad/locator"), { code: "invalid_request" });
+  await assert.rejects(client.getMessage("bad/locator"), { code: "invalid_request" });
+});
+
+test("mail client requires the authenticated v2 session response", async () => {
+  const client = mailClient.createMailClient({ fetchImpl: async () => jsonResponse({
+    status: "unauthenticated", principal_id: "principal-1", csrf_token: "csrf", accounts: []
+  }) });
+  const result = await client.openSession().catch(error => error);
+  assert.equal(result.code, "invalid_response");
 });
 
 test("explicit submit call posts the reviewed recipient and body snapshot", async () => {
@@ -140,7 +164,7 @@ test("explicit submit call posts the reviewed recipient and body snapshot", asyn
     csrfToken: "csrf-fixture",
     fetchImpl: async (path, options) => {
       calls.push({ path, options });
-      return jsonResponse({ status: "pending" });
+      return jsonResponse({ status: "sent", operation_id: "op-123" });
     }
   });
   const reviewedReply = {
@@ -155,7 +179,7 @@ test("explicit submit call posts the reviewed recipient and body snapshot", asyn
   };
 
   const result = await client.submitReply("op-123", reviewedReply);
-  assert.equal(result.status, "pending");
+  assert.equal(result.status, "sent");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, "POST");
   assert.equal(calls[0].path, "/mail/api/v2/replies/op-123/submit");
@@ -195,6 +219,7 @@ test("draft persistence whitelists same-browser content and retains operation id
     account_id: "account-1",
     locator: "locator-1",
     draft_id: "draft-1",
+    from_choices: [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
     from: { name: "Work", address: "work@example.invalid" },
     to: [{ address: "reply@example.invalid" }],
     cc: [],
@@ -210,6 +235,7 @@ test("draft persistence whitelists same-browser content and retains operation id
   }, 1234);
 
   assert.equal(draft.key, JSON.stringify(["principal-1", "account-1", "locator-1"]));
+  assert.deepEqual(draft.from_choices, [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }]);
   assert.equal(draft.operation_id, "op-1");
   assert.equal(draft.operation_status, "unknown");
   assert.equal(draft.body_text, "Keep this reply");
@@ -225,6 +251,7 @@ test("draft store restores only the matching principal, account, and locator", a
   const firstPage = mailDrafts.createDraftStore({ indexedDBImpl, now: () => 42 });
   await firstPage.put({
     principal_id: "principal-1", account_id: "account-1", locator: "locator-1",
+    from_choices: [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
     from: { address: "from@example.invalid" }, to: [{ address: "to@example.invalid" }],
     cc: [], bcc: [], subject: "Re: fixture", body_text: "Saved text",
     operation_id: "op-restore", operation_status: "unknown"
@@ -236,23 +263,29 @@ test("draft store restores only the matching principal, account, and locator", a
   const wrongPrincipal = await refreshedPage.get("principal-2", "account-1", "locator-1");
 
   assert.equal(restored.body_text, "Saved text");
+  assert.deepEqual(restored.from_choices, [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }]);
   assert.equal(restored.operation_id, "op-restore");
   assert.equal(restored.operation_status, "unknown");
   assert.equal(wrongAccount, undefined);
   assert.equal(wrongPrincipal, undefined);
 });
 
-test("unknown or pending operation cannot send again; only proven pre-submit failure permits a new operation", () => {
+test("only a prepared operation with proven retry eligibility can submit, and its identity is reused", () => {
   const ready = { prepared: true, storageReady: true, busy: false };
-  assert.equal(mailState.canSubmit({ ...ready, status: null, operationId: null }), true);
+  assert.equal(mailState.canSubmit({ ...ready, status: null, operationId: null }), false);
+  assert.equal(mailState.canSubmit({ ...ready, status: "not_submitted", operationId: "op-prepared", retryEligible: true }), true);
   assert.equal(mailState.canSubmit({ ...ready, status: "unknown", operationId: "op-old" }), false);
   assert.equal(mailState.canSubmit({ ...ready, status: "pending", operationId: "op-old" }), false);
   assert.equal(mailState.canSubmit({ ...ready, status: "absent", operationId: "op-old" }), false);
-  assert.equal(mailState.canSubmit({ ...ready, status: "not_submitted", operationId: "op-old" }), true);
-  assert.equal(mailState.operationIdForAttempt("op-old", "not_submitted", () => "op-new"), "op-new");
-  assert.equal(mailState.operationIdForAttempt("op-old", "unknown", () => "op-new"), "op-old");
+  assert.equal(mailState.canSubmit({ ...ready, status: "not_submitted", operationId: "op-old", retryEligible: false }), false);
+  assert.equal(mailState.canSubmit({ ...ready, status: "not_submitted", operationId: "op-old", retryEligible: true }), true);
+  assert.equal(mailState.operationIdForAttempt("op-prepared"), "op-prepared");
+  assert.throws(() => mailState.operationIdForAttempt(null), /prepared operation ID/);
   assert.equal(mailState.normalizeStatus("unrecognized"), "unknown");
-  assert.equal(mailState.canEditDraft("unknown", "op-old"), false);
+  assert.equal(mailState.canEditDraft({ status: null, operationId: null }), true);
+  assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-prepared", retryEligible: true }), true);
+  assert.equal(mailState.canEditDraft({ status: "unknown", operationId: "op-old", operationAttempted: true }), false);
+  assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-old", retryEligible: true, operationAttempted: true }), false);
 });
 
 test("multiple verified From choices require a saved human choice", () => {
@@ -263,4 +296,7 @@ test("multiple verified From choices require a saved human choice", () => {
   assert.equal(mailState.chooseFrom(null, choices), null);
   assert.equal(mailState.chooseFrom({ address: "WORK@example.invalid" }, choices), choices[1]);
   assert.equal(mailState.chooseFrom(null, [choices[0]]), choices[0]);
+  assert.equal(mailState.choosePreparedFrom(null, choices[1], choices), null);
+  assert.equal(mailState.choosePreparedFrom({ address: "WORK@example.invalid" }, choices[0], choices), choices[1]);
+  assert.equal(mailState.choosePreparedFrom(null, choices[0], [choices[0]]), choices[0]);
 });
