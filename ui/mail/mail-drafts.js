@@ -16,14 +16,14 @@
     return statuses.has(status) ? status : "unknown";
   }
 
-  function canEditDraft({ status, operationId, retryEligible = false, operationAttempted = false }) {
-    if (operationAttempted) return false;
+  function canEditDraft({ status, operationId, retryEligible = false, discarded = false }) {
+    if (discarded) return false;
     if (!operationId) return status == null || status === "";
     return status === "not_submitted" && retryEligible === true;
   }
 
-  function canSubmit({ status, operationId, retryEligible = false, prepared, storageReady, busy }) {
-    if (!prepared || !storageReady || busy || typeof operationId !== "string" || !operationId) return false;
+  function canSubmit({ status, operationId, retryEligible = false, discarded = false, prepared, storageReady, busy }) {
+    if (discarded || !prepared || !storageReady || busy || typeof operationId !== "string" || !operationId) return false;
     return status === "not_submitted" && retryEligible === true;
   }
 
@@ -34,21 +34,62 @@
     return preparedOperationId;
   }
 
+  function matchFrom(preferred, choices) {
+    if (!preferred?.address) return null;
+    return choices.find(choice => choice?.address && choice.address.toLowerCase() === preferred.address.toLowerCase()) || null;
+  }
+
   function chooseFrom(preferred, choices) {
-    if (preferred?.address) {
-      return choices.find(choice => choice?.address && choice.address.toLowerCase() === preferred.address.toLowerCase()) || null;
-    }
-    return choices.length === 1 ? choices[0] : null;
+    return matchFrom(preferred, choices) || (!preferred?.address && choices.length === 1 ? choices[0] : null);
   }
 
   function choosePreparedFrom(savedChoice, serverChoice, choices) {
-    const saved = chooseFrom(savedChoice, choices);
+    const saved = matchFrom(savedChoice, choices);
     if (saved) return saved;
     if (choices.length !== 1) return null;
-    return chooseFrom(serverChoice, choices) || choices[0];
+    return matchFrom(serverChoice, choices) || choices[0];
   }
 
-  const state = { canEditDraft, canSubmit, chooseFrom, choosePreparedFrom, normalizeStatus, operationIdForAttempt };
+  function copyReviewedPayload(value) {
+    if (!value || typeof value !== "object") return null;
+    return {
+      account_id: typeof value.account_id === "string" ? value.account_id : "",
+      locator: typeof value.locator === "string" ? value.locator : "",
+      from: copyAddress(value.from),
+      to: copyAddresses(value.to),
+      cc: copyAddresses(value.cc),
+      bcc: copyAddresses(value.bcc),
+      subject: typeof value.subject === "string" ? value.subject : "",
+      body_text: typeof value.body_text === "string" ? value.body_text : ""
+    };
+  }
+
+  function reviewedPayloadSignature(value) {
+    const payload = copyReviewedPayload(value);
+    return payload ? JSON.stringify(payload) : null;
+  }
+
+  function sameReviewedPayload(left, right) {
+    const leftSignature = reviewedPayloadSignature(left);
+    return leftSignature !== null && leftSignature === reviewedPayloadSignature(right);
+  }
+
+  function needsNewOperation({ status, retryEligible = false, operationAttempted = false, operationPayload, reviewedPayload, discarded = false }) {
+    return !discarded && operationAttempted === true && status === "not_submitted" && retryEligible === true &&
+      !sameReviewedPayload(operationPayload, reviewedPayload);
+  }
+
+  const state = {
+    canEditDraft,
+    canSubmit,
+    chooseFrom,
+    choosePreparedFrom,
+    matchFrom,
+    needsNewOperation,
+    normalizeStatus,
+    operationIdForAttempt,
+    sameReviewedPayload
+  };
 
   class DraftStorageError extends Error {
     constructor(message = "Draft recovery is unavailable in this browser.") {
@@ -88,6 +129,20 @@
   // Explicitly whitelist reviewed values and verified sender choices; source bodies and credentials stay out of storage.
   function createDraftRecord(draft, now = Date.now()) {
     const key = keyFor(draft.principal_id, draft.account_id, draft.locator);
+    if (draft.discarded === true) {
+      return {
+        key,
+        principal_id: draft.principal_id,
+        account_id: draft.account_id,
+        locator: draft.locator,
+        draft_id: typeof draft.draft_id === "string" ? draft.draft_id : "",
+        operation_id: typeof draft.operation_id === "string" ? draft.operation_id : null,
+        operation_status: typeof draft.operation_status === "string" ? draft.operation_status : null,
+        operation_attempted: true,
+        discarded: true,
+        updated_at: now
+      };
+    }
     return {
       key,
       principal_id: draft.principal_id,
@@ -103,7 +158,9 @@
       body_text: typeof draft.body_text === "string" ? draft.body_text : "",
       operation_id: typeof draft.operation_id === "string" ? draft.operation_id : null,
       operation_status: typeof draft.operation_status === "string" ? draft.operation_status : null,
+      operation_payload: copyReviewedPayload(draft.operation_payload),
       operation_attempted: Boolean(draft.operation_attempted),
+      require_from_choice: draft.require_from_choice === true,
       updated_at: now
     };
   }
@@ -166,6 +223,10 @@
       put(draft) {
         const record = createDraftRecord(draft, now());
         return transact("readwrite", store => store.put(record)).then(() => record);
+      },
+      delete(principalId, accountId, locator) {
+        const key = keyFor(principalId, accountId, locator);
+        return transact("readwrite", store => store.delete(key));
       }
     };
   }

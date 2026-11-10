@@ -142,9 +142,11 @@
             <p id="composer-message" class="form-message" role="status" aria-live="polite"></p>
             <div class="form-actions">
               <button id="send-reply" class="button button--primary" type="submit" disabled>Send reply</button>
-              <span class="send-hint">Mail is sent only when you activate Send reply.</span>
+              <button id="discard-draft" class="button button--secondary" type="button">Discard draft</button>
+              <span id="send-hint" class="send-hint">Mail is sent only when you activate Send reply.</span>
             </div>
           </form>
+          <button id="new-reply" class="button button--secondary" type="button" hidden>Start a new reply</button>
         </section>
       </div>
     </section>

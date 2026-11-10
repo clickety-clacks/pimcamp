@@ -27,7 +27,8 @@
     saveVersion: 0,
     busy: false,
     submitting: false,
-    reconciling: false
+    reconciling: false,
+    discarding: false
   };
 
   function currentLocator() {
@@ -144,10 +145,10 @@
     byId("source-body").textContent = body || "No readable message text is available.";
   }
 
-  function choicesFrom(reply) {
+  function choicesFrom(values) {
     // The API contract returns only currently authorized From choices; discard explicit invalidations.
-    const values = Array.isArray(reply?.from_choices) ? reply.from_choices : [];
-    return values.filter(choice => choice && typeof choice.address === "string" && choice.address.length > 0 && !/[\r\n\t]/.test(choice.address) &&
+    const choices = Array.isArray(values) ? values : [];
+    return choices.filter(choice => choice && typeof choice.address === "string" && choice.address.length > 0 && !/[\r\n\t]/.test(choice.address) &&
       choice.verified !== false && choice.valid !== false && choice.validity !== "invalid" && choice.validity !== "withdrawn");
   }
 
@@ -176,7 +177,9 @@
       option.dataset.provenance = typeof choice.provenance === "string" ? choice.provenance : "";
       select.add(option);
     }
-    const selected = selectFrom(draft.from, state.fromChoices);
+    const selected = draft.require_from_choice
+      ? mailState.matchFrom(draft.from, state.fromChoices)
+      : selectFrom(draft.from, state.fromChoices);
     if (draft.from && !selected && typeof draft.from.address === "string") {
       const option = new Option(`Unavailable: ${formatAddress(draft.from)}`, draft.from.address);
       option.disabled = true;
@@ -202,12 +205,21 @@
     updateSendButton();
   }
 
+  function clearReplyFields() {
+    byId("reply-from").replaceChildren(new Option("Choose a verified From address", ""));
+    for (const id of ["reply-to", "reply-cc", "reply-bcc", "reply-subject", "reply-body"]) byId(id).value = "";
+    state.formBound = false;
+    updateReview();
+  }
+
   function syncDraftFromForm() {
     if (!state.draft) return;
     const selectedFrom = byId("reply-from").value;
     const from = state.fromChoices.find(choice => choice.address === selectedFrom) || null;
-    if (from) state.draft.from = { name: singleLine(from.name) || null, address: from.address };
-    else if (state.draft.from?.address !== selectedFrom) state.draft.from = null;
+    if (from) {
+      state.draft.from = { name: singleLine(from.name) || null, address: from.address };
+      state.draft.require_from_choice = false;
+    } else if (state.draft.from?.address !== selectedFrom) state.draft.from = null;
     state.draft.to = parseAddressLines(byId("reply-to").value);
     state.draft.cc = parseAddressLines(byId("reply-cc").value);
     state.draft.bcc = parseAddressLines(byId("reply-bcc").value);
@@ -228,11 +240,26 @@
     byId("review-body").textContent = byId("reply-body").value;
   }
 
+  function currentReviewedReply() {
+    const selectedFrom = state.fromChoices.find(choice => choice.address === byId("reply-from").value);
+    return {
+      account_id: state.accountId,
+      locator: state.locator,
+      from: selectedFrom ? { name: singleLine(selectedFrom.name) || null, address: selectedFrom.address } : null,
+      to: (state.draft?.to || []).map(item => ({ ...item })),
+      cc: (state.draft?.cc || []).map(item => ({ ...item })),
+      bcc: (state.draft?.bcc || []).map(item => ({ ...item })),
+      subject: state.draft?.subject || "",
+      body_text: state.draft?.body_text || ""
+    };
+  }
+
   function statusBlocksSubmit() {
     return !mailState.canSubmit({
       status: state.draft?.operation_status,
       operationId: state.draft?.operation_id,
       retryEligible: state.draft?.retry_eligible,
+      discarded: state.draft?.discarded,
       operationAttempted: state.draft?.operation_attempted,
       prepared: state.prepared,
       storageReady: state.storageReady,
@@ -241,30 +268,72 @@
   }
 
   function updateFormAvailability() {
-    const editable = !state.submitting && !state.reconciling && mailState.canEditDraft({
+    const editable = !state.submitting && !state.reconciling && !state.discarding && mailState.canEditDraft({
       status: state.draft?.operation_status,
       operationId: state.draft?.operation_id,
       retryEligible: state.draft?.retry_eligible,
-      operationAttempted: state.draft?.operation_attempted
+      discarded: state.draft?.discarded
     });
     for (const control of form.elements) {
-      if (control.id !== "send-reply") control.disabled = !editable;
+      if (control.id !== "send-reply" && control.id !== "discard-draft") control.disabled = !editable;
     }
+    const discard = byId("discard-draft");
+    discard.hidden = !state.draft || state.draft.discarded === true || state.draft.operation_status === "sent";
+    discard.disabled = !state.draft || state.submitting || state.reconciling || state.discarding;
   }
 
   function updateSendButton() {
     const button = byId("send-reply");
-    if (!button || !state.draft) return;
+    if (!button) return;
+    if (!state.draft) {
+      button.disabled = true;
+      updateFormAvailability();
+      return;
+    }
+    if (state.draft.discarded === true) {
+      button.textContent = "Reply text discarded";
+      button.disabled = true;
+      updateFormAvailability();
+      return;
+    }
+    const reviewedReply = currentReviewedReply();
+    const prepareCorrection = mailState.needsNewOperation({
+      status: state.draft.operation_status,
+      retryEligible: state.draft.retry_eligible,
+      operationAttempted: state.draft.operation_attempted,
+      operationPayload: state.draft.operation_payload,
+      reviewedPayload: reviewedReply
+    });
     const retry = state.draft.operation_attempted === true && state.draft.operation_status === "not_submitted" &&
-      state.draft.retry_eligible === true;
-    button.textContent = retry ? "Retry send" : "Send reply";
-    const valid = Boolean(byId("reply-from").value && byId("reply-to").value.trim() && byId("reply-subject").value.trim());
+      state.draft.retry_eligible === true && !prepareCorrection;
+    button.textContent = prepareCorrection ? "Prepare corrected reply" : retry ? "Retry send" : "Send reply";
+    const recipientCount = reviewedReply.to.length + reviewedReply.cc.length + reviewedReply.bcc.length;
+    const valid = prepareCorrection
+      ? Boolean(recipientCount && reviewedReply.subject.trim())
+      : Boolean(reviewedReply.from && recipientCount && reviewedReply.subject.trim());
     button.disabled = statusBlocksSubmit() || !valid;
+    byId("send-hint").textContent = prepareCorrection
+      ? "Preparing a corrected reply will not send it. Review the new operation before activating Send reply."
+      : "Mail is sent only when you activate Send reply.";
     updateFormAvailability();
   }
 
   function snapshotDraft() {
-    return state.draft ? { ...state.draft, to: state.draft.to.map(item => ({ ...item })), cc: state.draft.cc.map(item => ({ ...item })), bcc: state.draft.bcc.map(item => ({ ...item })) } : null;
+    if (!state.draft) return null;
+    const payload = state.draft.operation_payload;
+    return {
+      ...state.draft,
+      to: (state.draft.to || []).map(item => ({ ...item })),
+      cc: (state.draft.cc || []).map(item => ({ ...item })),
+      bcc: (state.draft.bcc || []).map(item => ({ ...item })),
+      operation_payload: payload ? {
+        ...payload,
+        from: payload.from ? { ...payload.from } : null,
+        to: (payload.to || []).map(item => ({ ...item })),
+        cc: (payload.cc || []).map(item => ({ ...item })),
+        bcc: (payload.bcc || []).map(item => ({ ...item }))
+      } : null
+    };
   }
 
   function queueSave() {
@@ -298,19 +367,53 @@
     state.draft.retry_eligible = normalized === "not_submitted" && retryEligible === true;
     if (["sent", "pending", "unknown"].includes(normalized)) state.draft.operation_attempted = true;
     if (normalized === "sent") {
+      state.draft.from_choices = [];
+      state.fromChoices = [];
       state.draft.from = null;
       state.draft.to = [];
       state.draft.cc = [];
       state.draft.bcc = [];
       state.draft.subject = "";
       state.draft.body_text = "";
+      state.draft.operation_payload = null;
+      state.draft.require_from_choice = false;
       composerCard.dataset.state = "sent";
-      showComposerMessage("Pimcamp confirmed submission. Delivery is not confirmed.", "success");
-      showDraftState("Submitted", "saved");
+      if (state.draft.discarded === true) {
+        showComposerMessage("Reply text was discarded. Pimcamp confirmed submission; delivery is not confirmed.", "success");
+        showDraftState("Reply text discarded; submission confirmed", "saved");
+      } else {
+        showComposerMessage("Pimcamp confirmed submission. Delivery is not confirmed.", "success");
+        showDraftState("Submitted", "saved");
+      }
+    } else if (state.draft.discarded === true) {
+      if (normalized === "not_submitted" && state.draft.retry_eligible) {
+        showComposerMessage("Reply text was discarded. This operation did not submit; no reply text remains to retry.");
+        showDraftState("Reply text discarded; not submitted", "saved");
+      } else if (normalized === "not_submitted") {
+        showComposerMessage("Reply text was discarded. Pimcamp did not confirm retry eligibility; keep the operation and do not retry.", "error");
+        showDraftState("Reply text discarded; retry unavailable", "error");
+      } else if (normalized === "pending" || normalized === "absent") {
+        showComposerMessage("Reply text was discarded. The operation is unresolved; discarding cannot cancel a send. Keep checking status and do not retry.");
+        showDraftState("Reply text discarded; status unresolved");
+      } else {
+        showComposerMessage("Reply text was discarded. Pimcamp cannot confirm whether the reply was submitted; discarding cannot cancel a send.", "error");
+        showDraftState("Reply text discarded; outcome unknown", "error");
+      }
     } else if (normalized === "not_submitted" && state.draft.retry_eligible && state.draft.operation_attempted) {
       composerCard.dataset.state = "ready";
-      showComposerMessage("Pimcamp confirmed this operation did not submit. Review the reply and explicitly retry if you still want to send it.");
-      showDraftState("Draft saved; safe retry is available", "saved");
+      if (mailState.needsNewOperation({
+        status: normalized,
+        retryEligible: state.draft.retry_eligible,
+        operationAttempted: state.draft.operation_attempted,
+        operationPayload: state.draft.operation_payload,
+        reviewedPayload: currentReviewedReply()
+      })) {
+        showComposerMessage("Pimcamp confirmed this operation did not submit. Correct the reply, prepare a new operation, then review and explicitly send it.");
+        showDraftState("Draft saved; corrected reply needs a new operation", "saved");
+      } else {
+        showComposerMessage("Pimcamp confirmed this operation did not submit. Review the reply and explicitly retry if you still want to send it.");
+        showDraftState("Draft saved; safe retry is available", "saved");
+      }
     } else if (normalized === "not_submitted" && state.draft.retry_eligible) {
       composerCard.dataset.state = "ready";
       showComposerMessage("The reply is prepared but has not been sent. Review it, then choose Send reply if you want to submit it.");
@@ -380,6 +483,37 @@
     }
     if (memoryDraft) stored = memoryDraft;
 
+    if (stored?.discarded === true) {
+      state.prepared = false;
+      state.fromChoices = [];
+      state.draft = {
+        ...stored,
+        principal_id: state.principalId,
+        account_id: state.accountId,
+        locator: state.locator,
+        from_choices: [],
+        from: null,
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: "",
+        body_text: "",
+        operation_payload: null,
+        operation_attempted: true,
+        retry_eligible: false,
+        discarded: true
+      };
+      byId("composer-card").hidden = false;
+      byId("reply-form").hidden = false;
+      byId("new-reply").hidden = true;
+      clearReplyFields();
+      showComposerMessage("Reply text was discarded. The send-operation status is retained.");
+      showDraftState("Reply text discarded; checking send status");
+      updateSendButton();
+      if (state.draft.operation_id) await querySendStatus();
+      return;
+    }
+
     let prepared = null;
     if (stored?.operation_id) {
       state.prepared = true;
@@ -403,27 +537,32 @@
     }
 
     const reply = prepared?.reply && typeof prepared.reply === "object" ? prepared.reply : {};
-    if (!stored?.operation_id) state.fromChoices = choicesFrom(reply);
+    if (!stored?.operation_id) state.fromChoices = choicesFrom(reply.from_choices);
     const savedFrom = stored?.from || null;
-    const chosenFrom = mailState.choosePreparedFrom(savedFrom, reply.selected_from, state.fromChoices);
+    const chosenFrom = stored?.require_from_choice === true
+      ? mailState.matchFrom(savedFrom, state.fromChoices)
+      : mailState.choosePreparedFrom(savedFrom, reply.selected_from, state.fromChoices);
     const draft = {
       principal_id: state.principalId,
       account_id: state.accountId,
       locator: state.locator,
       draft_id: stored?.draft_id || uuid(),
       from_choices: state.fromChoices,
-      from: chosenFrom || stored?.from || null,
+      from: chosenFrom || (stored?.require_from_choice === true ? null : stored?.from || null),
       to: Array.isArray(stored?.to) ? stored.to : (reply.to || []),
       cc: Array.isArray(stored?.cc) ? stored.cc : (reply.cc || []),
       bcc: Array.isArray(stored?.bcc) ? stored.bcc : (reply.bcc || []),
       subject: typeof stored?.subject === "string" ? stored.subject : (reply.subject || ""),
       body_text: typeof stored?.body_text === "string" ? stored.body_text : (reply.body_text || ""),
       operation_id: stored?.operation_id || prepared?.operation_id || null,
+      operation_payload: stored?.operation_payload || null,
+      require_from_choice: stored?.require_from_choice === true,
       operation_status: stored?.operation_id
         ? mailState.normalizeStatus(stored.operation_status || "unknown")
         : null,
       retry_eligible: false,
-      operation_attempted: Boolean(stored?.operation_attempted)
+      operation_attempted: Boolean(stored?.operation_attempted),
+      discarded: false
     };
     if (!draft.subject && state.sourceSubject) {
       draft.subject = /^re:/i.test(state.sourceSubject) ? state.sourceSubject : `Re: ${state.sourceSubject}`;
@@ -457,8 +596,7 @@
         await requireRenewal();
         return;
       }
-      const message = publicError(error);
-      setGate("Message could not be opened", message, "retry");
+      setGate("Message could not be opened", publicError(error), "retry");
     }
   }
 
@@ -483,12 +621,12 @@
 
   async function requireRenewal() {
     if (state.draft) await queueSave();
-    hidePrivateContent();
+    hidePrivateContent({ clearAuthorization: true });
     client.setCsrfToken("");
     setGate("Mail session expired", "Your reply is preserved in this browser. Continue your mail session to reopen the message and check any send operation.", "reauth");
   }
 
-  function hidePrivateContent() {
+  function hidePrivateContent({ clearAuthorization = false } = {}) {
     view.hidden = true;
     byId("source-from").replaceChildren();
     byId("source-to").replaceChildren();
@@ -510,7 +648,7 @@
     state.formBound = false;
     state.sourceSubject = "";
     state.accountId = "";
-    state.authorizedAccounts = new Map();
+    if (clearAuthorization) state.authorizedAccounts = new Map();
     state.prepared = false;
     state.storageReady = false;
     state.fromChoices = [];
@@ -534,31 +672,212 @@
     }
   }
 
+  async function discardDraft(event) {
+    event.preventDefault();
+    if (!state.draft || state.draft.discarded === true || state.submitting || state.reconciling || state.discarding) return;
+    const mustRetainOperation = state.draft.operation_attempted === true ||
+      ["pending", "unknown"].includes(state.draft.operation_status);
+    const prompt = mustRetainOperation
+      ? "Discard the reply text? This keeps the send-operation record. It cannot cancel a message that may already have been submitted."
+      : "Discard this unsent reply from this browser? No email will be sent.";
+    if (!window.confirm(prompt)) return;
+
+    state.discarding = true;
+    updateSendButton();
+    try {
+      await state.saving.catch(() => undefined);
+      if (mustRetainOperation) {
+        const marker = {
+          principal_id: state.draft.principal_id,
+          account_id: state.draft.account_id,
+          locator: state.draft.locator,
+          draft_id: state.draft.draft_id,
+          operation_id: state.draft.operation_id,
+          operation_status: state.draft.operation_status,
+          operation_attempted: true,
+          discarded: true
+        };
+        await draftStore.put(marker);
+        state.draft = {
+          ...marker,
+          from_choices: [],
+          from: null,
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: "",
+          body_text: "",
+          operation_payload: null,
+          retry_eligible: false
+        };
+        state.fromChoices = [];
+        state.prepared = false;
+        state.storageReady = true;
+        byId("reply-form").hidden = false;
+        byId("new-reply").hidden = true;
+        clearReplyFields();
+        composerCard.hidden = false;
+        composerCard.dataset.state = "discarded";
+        showComposerMessage("Reply text was discarded. This does not cancel a message that may have been submitted; the operation status is retained.");
+        showDraftState("Reply text discarded; operation retained", "saved");
+        if (state.draft.operation_id) await querySendStatus();
+      } else {
+        await draftStore.delete(state.draft.principal_id, state.draft.account_id, state.draft.locator);
+        state.draft = null;
+        state.fromChoices = [];
+        state.prepared = false;
+        state.storageReady = true;
+        state.formBound = false;
+        clearReplyFields();
+        form.hidden = true;
+        byId("new-reply").hidden = false;
+        composerCard.hidden = false;
+        composerCard.dataset.state = "discarded";
+        showComposerMessage("Reply draft discarded. No email was sent.");
+        showDraftState("No draft saved", "saved");
+        showNotice("", "");
+      }
+    } catch (_) {
+      state.storageReady = false;
+      showComposerMessage("Pimcamp could not remove this reply from browser storage. The text is still here and sending is disabled.", "error");
+      showDraftState("Draft was not removed", "error");
+    } finally {
+      state.discarding = false;
+      updateSendButton();
+    }
+  }
+
+  async function startNewReply(event) {
+    event.preventDefault();
+    if (state.draft || state.submitting || state.busy || !state.storageReady) return;
+    state.submitting = true;
+    byId("new-reply").disabled = true;
+    showComposerMessage("Preparing a new reply. No email will be sent.");
+    try {
+      const prepared = await client.prepareReply(state.locator, "");
+      if (prepared.account_id !== state.accountId || prepared.locator !== state.locator) {
+        throw new Error("The reply account did not match the source account.");
+      }
+      const reply = prepared.reply;
+      state.fromChoices = choicesFrom(reply.from_choices);
+      state.prepared = true;
+      state.draft = {
+        principal_id: state.principalId,
+        account_id: state.accountId,
+        locator: state.locator,
+        draft_id: uuid(),
+        from_choices: state.fromChoices,
+        from: mailState.choosePreparedFrom(null, reply.selected_from, state.fromChoices),
+        to: Array.isArray(reply.to) ? reply.to : [],
+        cc: Array.isArray(reply.cc) ? reply.cc : [],
+        bcc: Array.isArray(reply.bcc) ? reply.bcc : [],
+        subject: typeof reply.subject === "string" ? reply.subject : "",
+        body_text: typeof reply.body_text === "string" ? reply.body_text : "",
+        operation_id: prepared.operation_id,
+        operation_payload: null,
+        require_from_choice: false,
+        operation_status: null,
+        retry_eligible: false,
+        operation_attempted: false,
+        discarded: false
+      };
+      if (!state.draft.subject && state.sourceSubject) {
+        state.draft.subject = /^re:/i.test(state.sourceSubject) ? state.sourceSubject : "Re: " + state.sourceSubject;
+      }
+      byId("new-reply").hidden = true;
+      byId("new-reply").disabled = false;
+      form.hidden = false;
+      composerCard.hidden = false;
+      applyDraftToForm(state.draft);
+      if (await queueSave()) await querySendStatus();
+    } catch (error) {
+      if (isSessionError(error)) await requireRenewal();
+      else showComposerMessage(publicError(error), "error");
+    } finally {
+      state.submitting = false;
+      byId("new-reply").disabled = false;
+      updateSendButton();
+    }
+  }
+
+  async function prepareCorrectedReply(reviewedReply) {
+    const previousDraftFrom = state.draft?.from || null;
+    const previousFromWasUnverified = Boolean(previousDraftFrom) && !reviewedReply.from;
+    state.submitting = true;
+    updateSendButton();
+    showComposerMessage("Preparing a corrected reply. No email will be sent.");
+    try {
+      if (!(await queueSave())) return;
+      const prepared = await client.prepareReply(state.locator, reviewedReply.body_text);
+      if (prepared.account_id !== state.accountId || prepared.locator !== state.locator) {
+        throw new Error("The reply account did not match the source account.");
+      }
+      const reply = prepared.reply;
+      state.fromChoices = choicesFrom(reply.from_choices);
+      const refreshedFrom = previousDraftFrom
+        ? mailState.chooseFrom(previousDraftFrom, state.fromChoices)
+        : mailState.choosePreparedFrom(null, reply.selected_from, state.fromChoices);
+      const mustChooseFromAgain = previousFromWasUnverified || Boolean(previousDraftFrom && !refreshedFrom);
+      state.draft = {
+        ...state.draft,
+        from_choices: state.fromChoices,
+        from: mustChooseFromAgain ? null : refreshedFrom || previousDraftFrom || null,
+        to: reviewedReply.to.map(item => ({ ...item })),
+        cc: reviewedReply.cc.map(item => ({ ...item })),
+        bcc: reviewedReply.bcc.map(item => ({ ...item })),
+        subject: reviewedReply.subject,
+        body_text: reviewedReply.body_text,
+        operation_id: prepared.operation_id,
+        operation_payload: null,
+        require_from_choice: mustChooseFromAgain,
+        operation_status: null,
+        retry_eligible: false,
+        operation_attempted: false,
+        discarded: false
+      };
+      state.prepared = true;
+      applyDraftToForm(state.draft);
+      showComposerMessage("A new operation is prepared. Nothing was sent. Review the From and all reply fields before Send.");
+      if (await queueSave()) await querySendStatus();
+    } catch (error) {
+      if (isSessionError(error)) await requireRenewal();
+      else {
+        showComposerMessage(publicError(error), "error");
+        updateSendButton();
+      }
+    } finally {
+      state.submitting = false;
+      updateSendButton();
+    }
+  }
+
   async function submitReply(event) {
     event.preventDefault();
     if (!state.draft || statusBlocksSubmit()) return;
     syncDraftFromForm();
-    const selectedFrom = state.fromChoices.find(choice => choice.address === byId("reply-from").value);
-    const recipients = [...state.draft.to, ...state.draft.cc, ...state.draft.bcc];
-    if (!selectedFrom || !recipients.length || !state.draft.subject.trim()) {
+    const reviewedReply = currentReviewedReply();
+    const recipients = [...reviewedReply.to, ...reviewedReply.cc, ...reviewedReply.bcc];
+    if (mailState.needsNewOperation({
+      status: state.draft.operation_status,
+      retryEligible: state.draft.retry_eligible,
+      operationAttempted: state.draft.operation_attempted,
+      operationPayload: state.draft.operation_payload,
+      reviewedPayload: reviewedReply,
+      discarded: state.draft.discarded
+    })) {
+      await prepareCorrectedReply(reviewedReply);
+      return;
+    }
+    if (!reviewedReply.from || !recipients.length || !reviewedReply.subject.trim()) {
       showComposerMessage("Choose a verified From identity and at least one recipient, then review the reply.", "error");
       updateSendButton();
       return;
     }
-    const reviewedReply = {
-      account_id: state.accountId,
-      locator: state.locator,
-      from: { name: singleLine(selectedFrom.name) || null, address: selectedFrom.address },
-      to: state.draft.to.map(item => ({ ...item })),
-      cc: state.draft.cc.map(item => ({ ...item })),
-      bcc: state.draft.bcc.map(item => ({ ...item })),
-      subject: state.draft.subject,
-      body_text: state.draft.body_text
-    };
     const previousOperationId = state.draft.operation_id;
     const previousOperationStatus = state.draft.operation_status;
     const previousRetryEligible = state.draft.retry_eligible;
     const previousAttempted = state.draft.operation_attempted;
+    const previousOperationPayload = state.draft.operation_payload;
     state.submitting = true;
     updateSendButton();
     showComposerMessage("Submitting the reviewed reply…");
@@ -569,11 +888,13 @@
       state.draft.operation_status = "sending";
       state.draft.retry_eligible = false;
       state.draft.operation_attempted = true;
+      state.draft.operation_payload = reviewedReply;
       if (!(await queueSave())) {
         state.draft.operation_id = previousOperationId;
         state.draft.operation_status = previousOperationStatus;
         state.draft.retry_eligible = previousRetryEligible;
         state.draft.operation_attempted = previousAttempted;
+        state.draft.operation_payload = previousOperationPayload;
         updateSendButton();
         return;
       }
@@ -607,6 +928,8 @@
   form.addEventListener("input", () => { queueSave(); });
   form.addEventListener("change", () => { queueSave(); });
   form.addEventListener("submit", submitReply);
+  byId("discard-draft").addEventListener("click", discardDraft);
+  byId("new-reply").addEventListener("click", startNewReply);
   byId("continue-session").addEventListener("click", resumeSession);
   byId("retry-open").addEventListener("click", resumeSession);
   if (!state.locator) setGate("Message link unavailable", "This link does not contain a valid message reference.", "invalid");

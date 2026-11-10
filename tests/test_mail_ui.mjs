@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
@@ -19,6 +20,8 @@ test("page references only locally provided same-origin assets", () => {
   for (const asset of assets) assert.equal(existsSync(join(projectRoot, "ui", "mail", asset)), true, asset);
   assert.match(html, /img-src 'none'/);
   assert.match(html, /id="source-reply-to-row"/);
+  assert.match(html, /id="discard-draft"/);
+  assert.match(html, /id="new-reply"/);
   const form = html.match(/<form\b[^>]*>([\s\S]*?)<\/form>/)?.[1] || "";
   assert.doesNotMatch(form, /\bname=/);
 });
@@ -52,7 +55,8 @@ function memoryIndexedDB() {
         put: record => requestFor(() => {
           records.set(record.key, record);
           return record.key;
-        }, record)
+        }, record),
+        delete: key => requestFor(() => records.delete(key), key)
       });
       return transaction;
     }
@@ -66,6 +70,193 @@ function memoryIndexedDB() {
         request.onsuccess?.();
       });
       return request;
+    }
+  };
+}
+
+function mailAppFixture({
+  storedDraft = null,
+  statuses = [],
+  prepares = [],
+  submissions = [],
+  confirmResult = true,
+  failPut = false,
+  failDelete = false
+} = {}) {
+  let savedDraft = storedDraft ? structuredClone(storedDraft) : undefined;
+  const calls = { session: [], message: [], prepare: [], status: [], submit: [], puts: [], deletes: [] };
+  const confirmPrompts = [];
+  const store = {
+    async get() { return savedDraft ? structuredClone(savedDraft) : undefined; },
+    async put(value) {
+      if (failPut) throw new Error("fixture storage write failed");
+      savedDraft = mailDrafts.createDraftRecord(value);
+      calls.puts.push(structuredClone(savedDraft));
+      return structuredClone(savedDraft);
+    },
+    async delete(principalId, accountId, locator) {
+      if (failDelete) throw new Error("fixture storage delete failed");
+      calls.deletes.push([principalId, accountId, locator]);
+      savedDraft = undefined;
+    }
+  };
+  const client = {
+    setCsrfToken() {},
+    async openSession() {
+      calls.session.push(true);
+      return {
+        status: "authenticated",
+        principal_id: "principal-1",
+        csrf_token: "csrf-fixture",
+        accounts: [{ account_id: "account-1", label: "Work" }]
+      };
+    },
+    async getMessage(locator) {
+      calls.message.push(locator);
+      return {
+        account_id: "account-1",
+        account_label: "Work",
+        locator,
+        source: {
+          from: [{ address: "source@example.invalid" }],
+          to: [{ address: "to@example.invalid" }],
+          cc: [],
+          reply_to: [{ address: "reply@example.invalid" }],
+          subject: "Fixture",
+          date: "2026-11-10T00:00:00Z"
+        },
+        body_parts: [{ media_type: "text/plain", content_utf8: "Fixture source" }]
+      };
+    },
+    async prepareReply(locator, bodyText) {
+      calls.prepare.push({ locator, bodyText });
+      const response = prepares.shift();
+      if (!response) throw new Error("no prepare fixture remains");
+      return structuredClone(response);
+    },
+    async sendStatus(accountId, operationId) {
+      calls.status.push({ accountId, operationId });
+      const response = statuses.shift();
+      if (response instanceof Error) throw response;
+      return structuredClone(response || {
+        account_id: accountId, operation_id: operationId, status: "not_submitted", retry_eligible: true
+      });
+    },
+    async submitReply(operationId, payload) {
+      calls.submit.push({ operationId, payload: structuredClone(payload) });
+      return structuredClone(submissions.shift() || { status: "sent", operation_id: operationId });
+    }
+  };
+  const elementIds = [
+    "main", "gate", "gate-title", "gate-message", "gate-actions", "continue-session", "retry-open", "spinner",
+    "mail-view", "draft-state", "notice", "source-heading", "account-badge", "source-from", "source-to",
+    "source-cc-row", "source-cc", "source-reply-to-row", "source-reply-to", "source-date", "source-subject",
+    "source-body", "composer-card", "composer-heading", "reply-form", "reply-from", "from-help", "reply-to",
+    "reply-cc", "reply-bcc", "recipient-help", "reply-subject", "reply-body", "body-help", "review-heading",
+    "review-from", "review-to", "review-cc", "review-bcc", "review-subject", "review-body", "composer-message",
+    "send-reply", "discard-draft", "send-hint", "new-reply"
+  ];
+  const elements = new Map();
+  class FakeElement {
+    constructor(id = "") {
+      this.id = id;
+      this.hidden = id === "composer-card";
+      this.disabled = false;
+      this.value = "";
+      this.textContent = "";
+      this.dataset = {};
+      this.children = [];
+      this.listeners = new Map();
+      this.elements = [];
+    }
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+    async emit(type) {
+      for (const listener of this.listeners.get(type) || []) {
+        await listener({ preventDefault() {}, target: this });
+      }
+      if (this.form && ["input", "change"].includes(type)) {
+        for (const listener of this.form.listeners.get(type) || []) {
+          await listener({ preventDefault() {}, target: this });
+        }
+      }
+    }
+    replaceChildren(...children) {
+      this.children = [...children];
+      if (this.id === "reply-from") this.value = "";
+    }
+    append(child) { this.children.push(child); }
+    add(child) { this.children.push(child); }
+    querySelector() { return elements.get("spinner"); }
+  }
+  for (const id of elementIds) elements.set(id, new FakeElement(id));
+  const form = elements.get("reply-form");
+  form.elements = [
+    "reply-from", "reply-to", "reply-cc", "reply-bcc", "reply-subject", "reply-body", "send-reply", "discard-draft"
+  ].map(id => elements.get(id));
+  for (const control of form.elements) control.form = form;
+  class FakeOption extends FakeElement {
+    constructor(text, value) {
+      super();
+      this.textContent = text;
+      this.value = value;
+      this.dataset = {};
+    }
+  }
+  const window = {
+    location: { pathname: "/mail/m/locator-1" },
+    confirm(message) { confirmPrompts.push(message); return confirmResult; },
+    PimcampMailClient: { createMailClient: () => client },
+    PimcampMailText: mailText,
+    PimcampMailDrafts: { ...mailDrafts, createDraftStore: () => store },
+    PimcampMailState: mailState
+  };
+  const document = {
+    getElementById(id) { return elements.get(id); },
+    createElement() { return new FakeElement(); }
+  };
+  runInNewContext(readFileSync(new URL("../ui/mail/mail-app.js", import.meta.url), "utf8"), {
+    window,
+    document,
+    Option: FakeOption,
+    crypto: { randomUUID: () => "fresh-draft-id" }
+  });
+  async function settle() {
+    for (let i = 0; i < 12; i += 1) await new Promise(resolve => setImmediate(resolve));
+  }
+  return { elements, calls, confirmPrompts, get savedDraft() { return savedDraft; }, settle };
+}
+
+function preparedMailReply(operationId, {
+  fromChoices = [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
+  selectedFrom = fromChoices.length === 1 ? fromChoices[0] : null,
+  to = [{ name: null, address: "reply@example.invalid" }],
+  bodyText = ""
+} = {}) {
+  return {
+    operation_id: operationId,
+    account_id: "account-1",
+    account_label: "Work",
+    locator: "locator-1",
+    source: {
+      from: [{ address: "source@example.invalid" }],
+      to: [],
+      cc: [],
+      reply_to: [{ address: "reply@example.invalid" }],
+      subject: "Fixture",
+      date: "2026-11-10T00:00:00Z"
+    },
+    reply: {
+      from_choices: fromChoices,
+      selected_from: selectedFrom,
+      to,
+      cc: [],
+      bcc: [],
+      subject: "Re: Fixture",
+      body_text: bodyText
     }
   };
 }
@@ -214,6 +405,16 @@ test("redirected API response requires mail-session renewal without exposing red
 });
 
 test("draft persistence whitelists same-browser content and retains operation identity", () => {
+  const operationPayload = {
+    account_id: "account-1",
+    locator: "locator-1",
+    from: { name: "Work", address: "work@example.invalid" },
+    to: [{ address: "reply@example.invalid" }],
+    cc: [],
+    bcc: [],
+    subject: "Re: fixture",
+    body_text: "Attempted reply"
+  };
   const draft = mailDrafts.createDraftRecord({
     principal_id: "principal-1",
     account_id: "account-1",
@@ -228,6 +429,7 @@ test("draft persistence whitelists same-browser content and retains operation id
     body_text: "Keep this reply",
     operation_id: "op-1",
     operation_status: "unknown",
+    operation_payload: operationPayload,
     source_body: "must not persist",
     csrf_token: "must not persist",
     session_cookie: "must not persist",
@@ -238,6 +440,10 @@ test("draft persistence whitelists same-browser content and retains operation id
   assert.deepEqual(draft.from_choices, [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }]);
   assert.equal(draft.operation_id, "op-1");
   assert.equal(draft.operation_status, "unknown");
+  assert.deepEqual(draft.operation_payload, {
+    ...operationPayload,
+    to: [{ name: null, address: "reply@example.invalid" }]
+  });
   assert.equal(draft.body_text, "Keep this reply");
   assert.equal(draft.updated_at, 1234);
   assert.equal("source_body" in draft, false);
@@ -254,7 +460,12 @@ test("draft store restores only the matching principal, account, and locator", a
     from_choices: [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
     from: { address: "from@example.invalid" }, to: [{ address: "to@example.invalid" }],
     cc: [], bcc: [], subject: "Re: fixture", body_text: "Saved text",
-    operation_id: "op-restore", operation_status: "unknown"
+    operation_id: "op-restore", operation_status: "unknown", operation_attempted: true,
+    operation_payload: {
+      account_id: "account-1", locator: "locator-1",
+      from: { address: "from@example.invalid" }, to: [{ address: "to@example.invalid" }],
+      cc: [], bcc: [], subject: "Re: fixture", body_text: "Saved text"
+    }
   });
 
   const refreshedPage = mailDrafts.createDraftStore({ indexedDBImpl, now: () => 43 });
@@ -266,11 +477,370 @@ test("draft store restores only the matching principal, account, and locator", a
   assert.deepEqual(restored.from_choices, [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }]);
   assert.equal(restored.operation_id, "op-restore");
   assert.equal(restored.operation_status, "unknown");
+  assert.equal(restored.operation_payload.body_text, "Saved text");
   assert.equal(wrongAccount, undefined);
   assert.equal(wrongPrincipal, undefined);
+  await refreshedPage.delete("principal-1", "account-1", "locator-1");
+  assert.equal(await refreshedPage.get("principal-1", "account-1", "locator-1"), undefined);
 });
 
-test("only a prepared operation with proven retry eligibility can submit, and its identity is reused", () => {
+test("discarded attempted drafts retain only the operation marker", () => {
+  const marker = mailDrafts.createDraftRecord({
+    principal_id: "principal-1",
+    account_id: "account-1",
+    locator: "locator-1",
+    draft_id: "draft-1",
+    operation_id: "op-uncertain",
+    operation_status: "unknown",
+    operation_attempted: true,
+    discarded: true,
+    from_choices: [{ address: "work@example.invalid" }],
+    from: { address: "work@example.invalid" },
+    to: [{ address: "reply@example.invalid" }],
+    cc: [],
+    bcc: [],
+    subject: "Private subject",
+    body_text: "Private text",
+    operation_payload: { body_text: "Private attempted text" }
+  }, 99);
+
+  assert.equal(marker.discarded, true);
+  assert.equal(marker.operation_attempted, true);
+  assert.equal(marker.operation_id, "op-uncertain");
+  assert.equal(marker.operation_status, "unknown");
+  assert.equal(marker.updated_at, 99);
+  for (const key of ["from_choices", "from", "to", "cc", "bcc", "subject", "body_text", "operation_payload"]) {
+    assert.equal(key in marker, false, key);
+  }
+});
+
+test("mail app restores verified From choices and operation without preparing or sending again", async () => {
+  const fromChoices = [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }];
+  const payload = {
+    account_id: "account-1",
+    locator: "locator-1",
+    from: { name: "Work", address: "work@example.invalid" },
+    to: [{ name: null, address: "reply@example.invalid" }],
+    cc: [],
+    bcc: [],
+    subject: "Re: Fixture",
+    body_text: "Saved reply"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-restore",
+    from_choices: fromChoices, ...payload, operation_id: "op-restore", operation_status: "unknown",
+    operation_attempted: true, operation_payload: payload
+  });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [{ status: "not_submitted", retry_eligible: true }]
+  });
+
+  await app.settle();
+
+  const from = app.elements.get("reply-from");
+  assert.equal(app.elements.get("gate").hidden, true);
+  assert.equal(app.elements.get("mail-view").hidden, false);
+  assert.equal(app.elements.get("account-badge").textContent, "Account · Work");
+  assert.equal(app.elements.get("source-subject").textContent, "Fixture");
+  assert.ok(from.children.some(option => option.value === "work@example.invalid"));
+  assert.equal(from.value, "work@example.invalid");
+  assert.equal(app.elements.get("reply-body").value, "Saved reply");
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+  assert.equal(app.elements.get("send-reply").disabled, false);
+  assert.equal(app.calls.prepare.length, 0);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.calls.status[0].operationId, "op-restore");
+});
+
+test("reauthentication restores the same draft and operation without preparing or sending", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const payload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: choice.name, address: choice.address },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Keep this during reauthentication"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-reauth",
+    from_choices: [choice], ...payload, operation_id: "op-reauth", operation_status: "unknown",
+    operation_attempted: true, operation_payload: payload
+  });
+  const expired = Object.assign(new Error("expired fixture session"), { status: 401, code: "session_expired" });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [expired, { status: "not_submitted", retry_eligible: true }]
+  });
+  await app.settle();
+
+  assert.equal(app.elements.get("gate-title").textContent, "Mail session expired");
+  assert.equal(app.elements.get("mail-view").hidden, true);
+  assert.equal(app.elements.get("reply-body").value, "");
+  assert.equal(app.calls.submit.length, 0);
+
+  await app.elements.get("continue-session").emit("click");
+  await app.settle();
+
+  assert.equal(app.calls.session.length, 2);
+  assert.deepEqual(app.calls.message, ["locator-1", "locator-1"]);
+  assert.equal(app.elements.get("mail-view").hidden, false);
+  assert.equal(app.elements.get("reply-body").value, payload.body_text);
+  assert.equal(app.elements.get("reply-from").value, choice.address);
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+  assert.equal(app.calls.prepare.length, 0);
+  assert.deepEqual(app.calls.status.map(call => call.operationId), ["op-reauth", "op-reauth"]);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("discard before an attempt deletes the draft and sends no mail", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-unsent", { bodyText: "" })],
+    statuses: [{ status: "not_submitted", retry_eligible: true }]
+  });
+  await app.settle();
+  app.elements.get("reply-body").value = "Discard me";
+  await app.elements.get("reply-body").emit("input");
+  await app.settle();
+
+  await app.elements.get("discard-draft").emit("click");
+  await app.settle();
+
+  assert.equal(app.confirmPrompts.length, 1);
+  assert.match(app.confirmPrompts[0], /No email will be sent/);
+  assert.deepEqual(app.calls.deletes, [["principal-1", "account-1", "locator-1"]]);
+  assert.equal(app.savedDraft, undefined);
+  assert.equal(app.elements.get("reply-body").value, "");
+  assert.equal(app.elements.get("reply-form").hidden, true);
+  assert.equal(app.elements.get("new-reply").hidden, false);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("discard removal failure preserves reply text and disables sending", async () => {
+  const app = mailAppFixture({
+    prepares: [preparedMailReply("op-delete-failure", { bodyText: "" })],
+    statuses: [{ status: "not_submitted", retry_eligible: true }],
+    failDelete: true
+  });
+  await app.settle();
+  const body = app.elements.get("reply-body");
+  body.value = "Keep this if browser storage cannot remove it";
+  await body.emit("input");
+  await app.settle();
+
+  await app.elements.get("discard-draft").emit("click");
+  await app.settle();
+
+  assert.equal(body.value, "Keep this if browser storage cannot remove it");
+  assert.equal(app.savedDraft.body_text, body.value);
+  assert.equal(app.elements.get("send-reply").disabled, true);
+  assert.match(app.elements.get("composer-message").textContent, /could not remove/);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("discard after an unknown status keeps the operation marker even without a local submit attempt", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-status-error",
+    from_choices: [choice], from: choice,
+    to: [{ address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Status must be checked before removing the record",
+    operation_id: "op-status-error", operation_status: "not_submitted", operation_attempted: false
+  });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [new Error("fixture status route unavailable"), { status: "not_submitted", retry_eligible: true }]
+  });
+  await app.settle();
+  assert.equal(app.savedDraft.operation_status, "unknown");
+
+  await app.elements.get("discard-draft").emit("click");
+  await app.settle();
+
+  assert.match(app.confirmPrompts[0], /cannot cancel/);
+  assert.equal(app.calls.deletes.length, 0);
+  assert.equal(app.savedDraft.discarded, true);
+  assert.equal(app.savedDraft.operation_id, "op-status-error");
+  assert.equal(app.savedDraft.operation_attempted, true);
+  for (const key of ["from_choices", "from", "to", "cc", "bcc", "subject", "body_text", "operation_payload"]) {
+    assert.equal(key in app.savedDraft, false, key);
+  }
+});
+
+test("failed discarded-marker write keeps the reply visible and disables sending", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const payload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: choice.name, address: choice.address },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Keep this visible if marker storage fails"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-marker-error",
+    from_choices: [choice], ...payload, operation_id: "op-marker-error", operation_status: "unknown",
+    operation_attempted: true, operation_payload: payload
+  });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [{ status: "unknown", retry_eligible: false }],
+    failPut: true
+  });
+  await app.settle();
+  const body = app.elements.get("reply-body");
+  assert.equal(body.value, payload.body_text);
+
+  await app.elements.get("discard-draft").emit("click");
+  await app.settle();
+
+  assert.match(app.confirmPrompts[0], /cannot cancel/);
+  assert.equal(body.value, payload.body_text);
+  assert.equal(app.savedDraft.body_text, payload.body_text);
+  assert.equal(app.elements.get("send-reply").disabled, true);
+  assert.match(app.elements.get("composer-message").textContent, /could not remove/);
+  assert.equal(app.calls.submit.length, 0);
+});
+
+test("discard after an attempt removes reply text but retains a minimal operation marker", async () => {
+  const payload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: "Work", address: "work@example.invalid" },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Keep this private until discarded"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-uncertain",
+    from_choices: [{ name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" }],
+    ...payload, operation_id: "op-uncertain", operation_status: "unknown",
+    operation_attempted: true, operation_payload: payload
+  });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [
+      { status: "unknown", retry_eligible: false },
+      { status: "unknown", retry_eligible: false }
+    ]
+  });
+  await app.settle();
+  assert.equal(app.elements.get("reply-body").value, payload.body_text);
+
+  await app.elements.get("discard-draft").emit("click");
+  await app.settle();
+
+  assert.match(app.confirmPrompts[0], /cannot cancel/);
+  assert.equal(app.calls.deletes.length, 0);
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.savedDraft.discarded, true);
+  assert.equal(app.savedDraft.operation_id, "op-uncertain");
+  assert.equal(app.savedDraft.operation_status, "unknown");
+  assert.equal(app.savedDraft.operation_attempted, true);
+  for (const key of ["from_choices", "from", "to", "cc", "bcc", "subject", "body_text", "operation_payload"]) {
+    assert.equal(key in app.savedDraft, false, key);
+  }
+  assert.equal(app.elements.get("reply-body").value, "");
+  assert.equal(app.elements.get("discard-draft").hidden, true);
+  assert.equal(app.elements.get("send-reply").disabled, true);
+  assert.match(app.elements.get("composer-message").textContent, /cannot cancel/);
+});
+
+test("corrected payload after proven non-submission prepares a new operation and requires renewed From choice", async () => {
+  const oldChoice = { name: "Old Work", address: "old@example.invalid", provenance: "config", validity: "valid" };
+  const oldPayload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: oldChoice.name, address: oldChoice.address },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "Original reply"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-correct",
+    from_choices: [oldChoice], ...oldPayload, operation_id: "op-old", operation_status: "not_submitted",
+    operation_attempted: true, operation_payload: oldPayload
+  });
+  const freshChoice = { name: "Current Work", address: "current@example.invalid", provenance: "config", validity: "valid" };
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [
+      { status: "not_submitted", retry_eligible: true },
+      { status: "not_submitted", retry_eligible: true }
+    ],
+    prepares: [preparedMailReply("op-new", { fromChoices: [freshChoice], selectedFrom: freshChoice, bodyText: "Corrected reply" })],
+    submissions: [{ status: "sent", operation_id: "op-new" }]
+  });
+  await app.settle();
+
+  const body = app.elements.get("reply-body");
+  body.value = "Corrected reply";
+  await body.emit("input");
+  await app.settle();
+  assert.equal(app.elements.get("send-reply").textContent, "Prepare corrected reply");
+  assert.equal(app.elements.get("send-reply").disabled, false);
+
+  await app.elements.get("reply-form").emit("submit");
+  await app.settle();
+
+  assert.equal(app.calls.prepare.length, 1);
+  assert.deepEqual(app.calls.prepare[0], { locator: "locator-1", bodyText: "Corrected reply" });
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.calls.status[1].operationId, "op-new");
+  assert.equal(app.savedDraft.require_from_choice, true);
+
+  const restored = mailAppFixture({
+    storedDraft: app.savedDraft,
+    statuses: [{ status: "not_submitted", retry_eligible: true }],
+    submissions: [{ status: "sent", operation_id: "op-new" }]
+  });
+  await restored.settle();
+  assert.equal(restored.elements.get("reply-body").value, "Corrected reply");
+  assert.equal(restored.elements.get("reply-from").value, "");
+  assert.ok(restored.elements.get("reply-from").children.some(option => option.value === "current@example.invalid"));
+  assert.equal(restored.elements.get("send-reply").disabled, true);
+
+  restored.elements.get("reply-from").value = "current@example.invalid";
+  await restored.elements.get("reply-from").emit("change");
+  await restored.settle();
+  assert.equal(restored.elements.get("send-reply").textContent, "Send reply");
+  assert.equal(restored.elements.get("send-reply").disabled, false);
+
+  await restored.elements.get("reply-form").emit("submit");
+  await restored.settle();
+
+  assert.equal(restored.calls.prepare.length, 0);
+  assert.equal(restored.calls.submit.length, 1);
+  assert.equal(restored.calls.submit[0].operationId, "op-new");
+  assert.equal(restored.calls.submit[0].payload.from.address, "current@example.invalid");
+  assert.equal(restored.calls.submit[0].payload.body_text, "Corrected reply");
+});
+
+test("an unchanged proven not-submitted reply retries only after explicit activation with its original operation", async () => {
+  const choice = { name: "Work", address: "work@example.invalid", provenance: "config", validity: "valid" };
+  const payload = {
+    account_id: "account-1", locator: "locator-1",
+    from: { name: choice.name, address: choice.address },
+    to: [{ name: null, address: "reply@example.invalid" }], cc: [], bcc: [],
+    subject: "Re: Fixture", body_text: "The reviewed reply"
+  };
+  const storedDraft = mailDrafts.createDraftRecord({
+    principal_id: "principal-1", account_id: "account-1", locator: "locator-1", draft_id: "draft-retry",
+    from_choices: [choice], ...payload, operation_id: "op-retry", operation_status: "not_submitted",
+    operation_attempted: true, operation_payload: payload
+  });
+  const app = mailAppFixture({
+    storedDraft,
+    statuses: [{ status: "not_submitted", retry_eligible: true }],
+    submissions: [{ status: "sent", operation_id: "op-retry" }]
+  });
+  await app.settle();
+  assert.equal(app.calls.submit.length, 0);
+  assert.equal(app.elements.get("send-reply").textContent, "Retry send");
+
+  await app.elements.get("reply-form").emit("submit");
+  await app.settle();
+
+  assert.equal(app.calls.prepare.length, 0);
+  assert.equal(app.calls.submit.length, 1);
+  assert.equal(app.calls.submit[0].operationId, "op-retry");
+  assert.deepEqual(app.calls.submit[0].payload, payload);
+});
+
+test("only a prepared operation with proven retry eligibility can submit, and corrected attempts need a new operation", () => {
   const ready = { prepared: true, storageReady: true, busy: false };
   assert.equal(mailState.canSubmit({ ...ready, status: null, operationId: null }), false);
   assert.equal(mailState.canSubmit({ ...ready, status: "not_submitted", operationId: "op-prepared", retryEligible: true }), true);
@@ -285,7 +855,25 @@ test("only a prepared operation with proven retry eligibility can submit, and it
   assert.equal(mailState.canEditDraft({ status: null, operationId: null }), true);
   assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-prepared", retryEligible: true }), true);
   assert.equal(mailState.canEditDraft({ status: "unknown", operationId: "op-old", operationAttempted: true }), false);
-  assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-old", retryEligible: true, operationAttempted: true }), false);
+  assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-old", retryEligible: true }), true);
+  assert.equal(mailState.canEditDraft({ status: "not_submitted", operationId: "op-old", retryEligible: true, discarded: true }), false);
+  const attempted = {
+    account_id: "account-1", locator: "locator-1", from: { address: "work@example.invalid" },
+    to: [{ address: "reply@example.invalid" }], cc: [], bcc: [], subject: "Re: fixture", body_text: "Original"
+  };
+  assert.equal(mailState.needsNewOperation({
+    status: "not_submitted", retryEligible: true, operationAttempted: true,
+    operationPayload: attempted, reviewedPayload: { ...attempted }
+  }), false);
+  assert.equal(mailState.needsNewOperation({
+    status: "not_submitted", retryEligible: true, operationAttempted: true,
+    operationPayload: attempted, reviewedPayload: { ...attempted, body_text: "Corrected" }
+  }), true);
+  assert.equal(mailState.needsNewOperation({
+    status: "unknown", retryEligible: false, operationAttempted: true,
+    operationPayload: attempted, reviewedPayload: { ...attempted, body_text: "Corrected" }
+  }), false);
+  assert.equal(mailState.sameReviewedPayload(attempted, { ...attempted }), true);
 });
 
 test("multiple verified From choices require a saved human choice", () => {
