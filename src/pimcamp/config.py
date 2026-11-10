@@ -379,10 +379,10 @@ def _himalaya(value: dict[str, Any], *, mail_account: bool = False) -> HimalayaC
     allowed = required | ({"backend"} if mail_account else set())
     if not required.issubset(value) or not set(value).issubset(allowed):
         raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
-    # Only the explicitly selected Gmail path has source-supported native IDs.
+    # Native paths require an explicit selector; Auto must not change identity.
     # Selecting it does not establish account identity or enable durable links.
     backend = value.get("backend")
-    if "backend" in value and backend != "gmail":
+    if "backend" in value and backend not in {"gmail", "dovecot"}:
         raise unavailable("Pimcamp native mail backend is unsupported.")
     executable = value["executable"]
     account = value["account"]
@@ -395,7 +395,7 @@ def _himalaya(value: dict[str, Any], *, mail_account: bool = False) -> HimalayaC
         for item in (executable, account, inbox)
     ):
         raise unavailable("Pimcamp Himalaya adapter configuration is invalid.")
-    if backend == "gmail" and account == "default":
+    if backend is not None and account == "default":
         raise unavailable("Pimcamp native mail requires an explicit account selector.")
     if not isinstance(config_paths, list) or any(
         not isinstance(path, str) or not path for path in config_paths

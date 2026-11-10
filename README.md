@@ -198,9 +198,8 @@ resolution cannot produce a link. The adapter must be able to resolve the
 evidence after supported folder moves and reconnects; a subject, RFC 5322
 Message-ID, or folder-local UID alone is not evidence of that guarantee. The
 Himalaya adapter provides native identity only when explicitly configured for
-Gmail. Other backends, including generic IMAP, return `cannot_link` without
-authoritative evidence. Dovecot X-GUID same-folder lookup alone does not establish
-cross-folder, rebuild or duplicate continuity and is not enabled here.
+Gmail or Dovecot X-GUID. Generic IMAP still returns `cannot_link` without
+authoritative evidence.
 
 A Himalaya adapter inside `mail_accounts` may explicitly set `"backend": "gmail"`
 to pin its reads and lists to the native Gmail backend without Auto/IMAP fallback.
@@ -211,6 +210,32 @@ folder is not used as durable identity. Initial listing still covers the configu
 collection, not an account-wide search. Lower lookup failures remain unavailable
 unless positively classified; they are not guessed to mean deletion.
 The v1 top-level adapter schema and default behavior remain unchanged.
+
+The opt-in `"backend": "dovecot"` selector inside a v2 mail-account adapter
+pins the lower backend to IMAP and uses Himalaya's raw IMAP command interface.
+It also needs `identity_capability: "native"` and a configured account `address`.
+It requires the raw/stdin interface inspected at Himalaya source revision
+`ca88bee08ad2e92127b46dc6200d1e8201885156`; other versions need verification.
+Listing fetches current headers, flags and native X-GUID together, using
+`EXAMINE` and `BODY.PEEK[HEADER]`. Resolution uses `LIST "" "*"` and exact
+`UID SEARCH X-GUID` across every returned selectable folder, including
+unsubscribed folders, then verifies each match. The configured inbox and returned
+folder names are IMAP wire names (ASCII or modified UTF-7). No local snapshot,
+UID or Message-ID matching substitutes for X-GUID. Multiple occurrences refuse
+as ambiguous; zero matches report missing; incomplete/failed searches remain
+errors. Reads fetch body and GUID together with `BODY.PEEK[]` and reject changed
+identity, including UID reuse. Neither listing nor reading changes Seen flags.
+
+This path is isolated fixture evidence, not hosted-provider continuity acceptance.
+Account-wide lookup means the selectable folders visible to the configured
+account; folders hidden by provider permissions cannot be established locally.
+Folder enumeration/search is not an atomic provider snapshot; a concurrent move
+can produce a recoverable missing/conflict result. A provider that changes GUIDs
+on rebuild cannot be repaired by this adapter. Unsupported or incomplete raw
+responses fail closed. The lower JSON transport must preserve IMAP literal byte
+lengths; non-UTF-8 raw data that it rewrites is not proved supported. Real lower
+captures, provider move/rebuild/duplicate behavior and all-account browser
+acceptance remain required. No live mail or configuration changes are implied.
 
 Locators bind to the stable local account ID plus configured `address`, separately
 from editable reply From choices. Changing that address under an ID makes old
