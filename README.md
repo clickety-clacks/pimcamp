@@ -9,6 +9,20 @@ Pimcamp's seven-operation v1 boundary is not a full email app. The additive
 private v2 surface provides a message-specific reader and reply composer; it
 does not add a sync engine, search index, or general email automation platform.
 
+The authenticated v2 browser reader and plain-text reply composer use separate
+session, message-read, reply-prepare, explicit-submit, and read-only send-status
+routes. Message content is shown as inert text with remote content off. The
+browser surface leaves every `pimcamp.v1` request envelope and operation behavior
+unchanged. Production integration and release acceptance remain pending.
+
+Mail sessions return idle and absolute deadlines. Foreground edits and protected
+user actions call `POST /mail/api/session/activity` with the current same-origin
+cookie and CSRF token; background status checks and visibility changes do not
+renew idle time. Sessions expire at 30 minutes idle or 12 hours absolute,
+whichever comes first. Human logout uses `POST /mail/api/session/logout`, hides
+private content, and keeps same-browser reply and send-operation records for
+later authorized recovery.
+
 A generic account setup UI is included in this development tree and its installer;
 it has not yet passed release acceptance. See the [onboarding design specification](docs/onboarding-ui-spec.md)
 and [integration requirements](docs/onboarding-integration.md). This setup UI
@@ -117,7 +131,7 @@ capabilities. It is not part of the MVP and does not add a capability.
 
 ## MVP capabilities
 
-The public MVP surface contains exactly seven capabilities:
+The public `pimcamp.v1` operation surface contains seven capabilities:
 
 1. `list` — list current message summaries.
 2. `read` — retrieve the current form of a selected message.
@@ -129,6 +143,8 @@ The public MVP surface contains exactly seven capabilities:
    can retrieve authoritative state through Pimcamp.
 
 ## Private message viewer API (`pimcamp.v2`)
+
+Agent link-generation instructions are in [the Pimcamp skill](skills/pimcamp/SKILL.md#private-message-viewreply-links-v2).
 
 The v2 extension is separate from the seven `pimcamp.v1` operations; v1 request
 schemas and results remain unchanged. Its agent operations are `accounts`,
@@ -191,7 +207,11 @@ deployment decision backed by account/provider evidence.
 authorized `accounts`, `idle_deadline`, `absolute_deadline`, and an HttpOnly,
 Secure, SameSite cookie. Sessions default to a 30-minute idle limit and a
 12-hour absolute limit; equality with either deadline is expired, and activity
-never moves the absolute deadline. Missing or expired sessions return HTTP 401
+never moves the absolute deadline. Session establishment reuses a valid cookie
+for the same verified principal, preserving its CSRF token and both deadlines
+while checking current account authorization. This lets multiple message tabs
+share the browser session. An expired, invalid, logged-out, or different-principal
+cookie requires a fresh session. Missing or expired sessions return HTTP 401
 with the flat v2 error fields `code: "session_expired"`, `message`, and
 `retryable: false`. Actual origin, CSRF, account, or principal authorization
 failures remain HTTP 403 `permission_denied`.
