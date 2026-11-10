@@ -15,7 +15,7 @@ from typing import Any
 
 from .config import AdapterConfig, MiradorConfig
 from .diagnostics import emit
-from .errors import ERROR_CODES, PimcampError, unavailable
+from .errors import ERROR_CODES, NotSubmittedError, PimcampError, unavailable
 from .jsonio import dumps_line, loads_one
 
 
@@ -43,7 +43,7 @@ class CommandOperationsAdapter:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise unavailable() from exc
+            raise NotSubmittedError("The configured mail adapter is unavailable.") from exc
         assert process.stdin is not None
         assert process.stdout is not None
 
@@ -68,23 +68,28 @@ class CommandOperationsAdapter:
             remaining = _remaining(deadline)
         except PimcampError as exc:
             _kill(process)
+            process.stdout.close()
             raise _after_start_error(mutation) from exc
         try:
             line = output.get(timeout=remaining)
         except queue.Empty as exc:
             _kill(process)
+            process.stdout.close()
             raise _after_start_error(mutation) from exc
         if not line:
             _kill(process)
+            process.stdout.close()
             raise _after_start_error(mutation)
         try:
             value = loads_one(line)
             result = _port_result(value)
         except PimcampError:
             _kill(process)
+            process.stdout.close()
             raise
         except Exception as exc:
             _kill(process)
+            process.stdout.close()
             raise _after_start_error(mutation) from exc
 
         try:
@@ -96,6 +101,7 @@ class CommandOperationsAdapter:
             _kill(process)
             emit(adapter_class=self.adapter_class, forced_termination=True)
         remainder = process.stdout.read()
+        process.stdout.close()
         if remainder.strip():
             raise _after_start_error(mutation)
         return result

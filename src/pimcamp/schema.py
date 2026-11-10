@@ -4,7 +4,7 @@ from datetime import datetime
 import uuid
 from typing import Any
 
-from . import CONTRACT_VERSION
+from . import CAPABILITIES, CONTRACT_VERSION, V2_CAPABILITIES, V2_CONTRACT_VERSION
 from .errors import invalid
 
 
@@ -16,6 +16,13 @@ _OPERATIONS = {
     "send": ({"composition", "mutation_id"}, set()),
     "junk": ({"message_ref", "mutation_id"}, set()),
     "subscribe_new_mail": (set(), set()),
+}
+
+_V2_OPERATIONS = {
+    "accounts": (set(), set()),
+    "account_info": ({"account_id"}, set()),
+    "list_account": ({"account_id", "limit"}, {"cursor"}),
+    "issue_link": ({"account_id", "source_ref"}, set()),
 }
 
 
@@ -32,6 +39,13 @@ def _string(value: Any) -> str:
     if not isinstance(value, str):
         raise invalid()
     return value
+
+
+def _nonempty_string(value: Any) -> str:
+    text = _string(value)
+    if not text:
+        raise invalid()
+    return text
 
 
 def _nullable_string(value: Any) -> str | None:
@@ -98,16 +112,77 @@ def _composition(value: Any) -> dict[str, Any]:
 
 def validate_envelope(operation: str, value: Any) -> tuple[str | None, dict[str, Any]]:
     envelope = _object(value, {"contract_version", "input"}, {"client_credential"})
-    if envelope["contract_version"] != CONTRACT_VERSION:
+    if operation in CAPABILITIES:
+        expected_version = CONTRACT_VERSION
+        operations = _OPERATIONS
+    elif operation in V2_CAPABILITIES:
+        expected_version = V2_CONTRACT_VERSION
+        operations = _V2_OPERATIONS
+    else:
+        raise invalid("The operation is unsupported.")
+    if envelope["contract_version"] != expected_version:
         raise invalid("The contract version is unsupported.")
     credential = envelope.get("client_credential")
     if credential is not None and not isinstance(credential, str):
         raise invalid()
-    if operation not in _OPERATIONS:
-        raise invalid("The operation is unsupported.")
-    required, optional = _OPERATIONS[operation]
+    required, optional = operations[operation]
     raw_input = _object(envelope["input"], required, optional)
-    return credential, validate_input(operation, raw_input)
+    validator = validate_input if operation in CAPABILITIES else validate_v2_input
+    return credential, validator(operation, raw_input)
+
+
+def validate_v2_input(operation: str, value: dict[str, Any]) -> dict[str, Any]:
+    if operation == "accounts":
+        return {}
+    if operation == "account_info":
+        return {"account_id": _nonempty_string(value["account_id"])}
+    if operation == "list_account":
+        limit = value["limit"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise invalid()
+        result: dict[str, Any] = {
+            "account_id": _nonempty_string(value["account_id"]),
+            "limit": limit,
+        }
+        if "cursor" in value:
+            result["cursor"] = _nonempty_string(value["cursor"])
+        return result
+    if operation == "issue_link":
+        return {
+            "account_id": _nonempty_string(value["account_id"]),
+            "source_ref": _nonempty_string(value["source_ref"]),
+        }
+    raise invalid("The operation is unsupported.")
+
+
+def validate_browser_session(value: Any) -> dict[str, Any]:
+    return _object(value, set())
+
+
+def validate_browser_prepare(value: Any) -> dict[str, str]:
+    item = _object(value, {"locator", "body_text"})
+    return {
+        "locator": _nonempty_string(item["locator"]),
+        "body_text": _string(item["body_text"]),
+    }
+
+
+def validate_browser_submit(value: Any) -> dict[str, Any]:
+    item = _object(
+        value,
+        {"account_id", "locator", "from", "to", "cc", "bcc", "subject", "body_text"},
+    )
+    recipients = {field: _addresses(item[field]) for field in ("to", "cc", "bcc")}
+    if not any(recipients[field] for field in recipients):
+        raise invalid("A reply needs at least one recipient.")
+    return {
+        "account_id": _nonempty_string(item["account_id"]),
+        "locator": _nonempty_string(item["locator"]),
+        "from": _address(item["from"]),
+        **recipients,
+        "subject": _subject(item["subject"]),
+        "body_text": _string(item["body_text"]),
+    }
 
 
 def validate_input(operation: str, value: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="Private Pimcamp message viewer and reply composer.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <title>Reply to a message · Pimcamp</title>
+  <link rel="stylesheet" href="/mail/assets/mail.css">
+  <script src="/mail/assets/mail-text.js" defer></script>
+  <script src="/mail/assets/mail-client.js" defer></script>
+  <script src="/mail/assets/mail-drafts.js" defer></script>
+  <script src="/mail/assets/mail-app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to message</a>
+  <header class="topbar">
+    <div class="topbar__inner">
+      <span class="brand" aria-label="Pimcamp private mail">
+        <span class="brand__mark" aria-hidden="true">P</span>
+        <span>Pimcamp</span>
+      </span>
+      <span class="private-label">Private mail</span>
+    </div>
+  </header>
+
+  <main id="main" class="page-shell">
+    <section id="gate" class="panel gate" aria-labelledby="gate-title">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1 id="gate-title">Opening your message</h1>
+      <p id="gate-message" role="status" aria-live="polite">Checking your mail session…</p>
+      <div id="gate-actions" class="gate-actions" hidden>
+        <button id="continue-session" class="button button--primary" type="button">Continue mail session</button>
+        <button id="retry-open" class="button button--secondary" type="button" hidden>Try again</button>
+      </div>
+    </section>
+
+    <section id="mail-view" hidden aria-label="Message and reply">
+      <header class="page-heading">
+        <div>
+          <p class="eyebrow">Private message</p>
+          <h1>Review and reply</h1>
+        </div>
+        <div class="page-heading__actions">
+          <p id="draft-state" class="draft-state" role="status" aria-live="polite">Loading draft…</p>
+          <button id="logout-session" class="button button--secondary" type="button">End mail session</button>
+        </div>
+      </header>
+
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+      <div class="mail-grid">
+        <article class="card source-card" aria-labelledby="source-heading">
+          <div class="card__heading">
+            <div>
+              <p class="eyebrow">Original message</p>
+              <h2 id="source-heading">Message</h2>
+            </div>
+            <span id="account-badge" class="account-badge">Mail account</span>
+          </div>
+          <dl class="message-meta">
+            <div class="message-meta__row">
+              <dt>From</dt>
+              <dd id="source-from"></dd>
+            </div>
+            <div class="message-meta__row">
+              <dt>To</dt>
+              <dd id="source-to"></dd>
+            </div>
+            <div id="source-cc-row" class="message-meta__row" hidden>
+              <dt>Cc</dt>
+              <dd id="source-cc"></dd>
+            </div>
+            <div id="source-reply-to-row" class="message-meta__row" hidden>
+              <dt>Reply-To</dt>
+              <dd id="source-reply-to"></dd>
+            </div>
+            <div class="message-meta__row">
+              <dt>Date</dt>
+              <dd id="source-date"></dd>
+            </div>
+          </dl>
+          <h3 id="source-subject" class="source-subject"></h3>
+          <div id="source-body" class="message-body" tabindex="0" aria-label="Original message text"></div>
+          <p class="thread-note">Reply threading is tied to this original message.</p>
+        </article>
+
+        <section id="composer-card" class="card composer-card" aria-labelledby="composer-heading">
+          <div class="card__heading">
+            <div>
+              <p class="eyebrow">Plain-text reply</p>
+              <h2 id="composer-heading">Your reply</h2>
+            </div>
+            <span class="text-only-label">Text only</span>
+          </div>
+
+          <form id="reply-form" method="get" novalidate>
+            <div class="field">
+              <label for="reply-from">From</label>
+              <select id="reply-from" autocomplete="off" required>
+                <option value="">Choose a verified From address</option>
+              </select>
+              <p id="from-help" class="field-help">Choose the identity that will send this reply.</p>
+            </div>
+
+            <div class="field">
+              <label for="reply-to">To</label>
+              <textarea id="reply-to" rows="2" autocomplete="off" spellcheck="false" required aria-describedby="recipient-help"></textarea>
+            </div>
+            <div class="field field--optional">
+              <label for="reply-cc">Cc</label>
+              <textarea id="reply-cc" rows="2" autocomplete="off" spellcheck="false"></textarea>
+            </div>
+            <div class="field field--optional">
+              <label for="reply-bcc">Bcc</label>
+              <textarea id="reply-bcc" rows="2" autocomplete="off" spellcheck="false"></textarea>
+            </div>
+            <p id="recipient-help" class="field-help">Enter one address per line. You can edit the recipients before sending.</p>
+
+            <div class="field">
+              <label for="reply-subject">Subject</label>
+              <input id="reply-subject" type="text" autocomplete="off" maxlength="998" required>
+            </div>
+            <div class="field">
+              <label for="reply-body">Message</label>
+              <textarea id="reply-body" rows="12" autocomplete="off" spellcheck="true" required aria-describedby="body-help"></textarea>
+              <p id="body-help" class="field-help">Only plain text will be sent. The original message remains above.</p>
+            </div>
+
+            <section class="review-box" aria-labelledby="review-heading">
+              <h3 id="review-heading">Review before sending</h3>
+              <dl class="review-meta">
+                <div><dt>From</dt><dd id="review-from"></dd></div>
+                <div><dt>To</dt><dd id="review-to"></dd></div>
+                <div><dt>Cc</dt><dd id="review-cc"></dd></div>
+                <div><dt>Bcc</dt><dd id="review-bcc"></dd></div>
+                <div><dt>Subject</dt><dd id="review-subject"></dd></div>
+              </dl>
+              <pre id="review-body" class="review-body"></pre>
+            </section>
+
+            <p id="composer-message" class="form-message" role="status" aria-live="polite"></p>
+            <div class="form-actions">
+              <button id="send-reply" class="button button--primary" type="submit" disabled>Send reply</button>
+              <button id="discard-draft" class="button button--secondary" type="button">Discard draft</button>
+              <span id="send-hint" class="send-hint">Mail is sent only when you activate Send reply.</span>
+            </div>
+          </form>
+          <button id="new-reply" class="button button--secondary" type="button" hidden>Start a new reply</button>
+        </section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

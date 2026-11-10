@@ -1,6 +1,6 @@
 ---
 name: pimcamp
-description: "Operate Pimcamp email from agents and scripts: list and read messages, compose and reply, send authorized mail, file junk, and consume new-mail notifications. Use for email tasks in deployments that provide Pimcamp."
+description: "Operate Pimcamp email from agents and scripts: list and read messages, compose and reply, send authorized mail, file junk, and consume new-mail notifications. Use for email tasks and private message-view/reply links in reports, search results, chat, or other output in deployments that provide Pimcamp."
 ---
 
 # Pimcamp email operations
@@ -10,8 +10,8 @@ in its local environment documentation. Do not infer an account from a hostname
 or assume that a software installation has an onboarded mailbox. Pimcamp uses
 the configured sending identity; recipients come from the user's task.
 
-Pimcamp is a structured executable, not an interactive mail client or an HTTP
-API. Invoke `pimcamp OPERATION` with one UTF-8 JSON request on stdin:
+The agent interface is a structured executable; the v2 browser reader/composer
+has a separate authenticated HTTP interface. Invoke `pimcamp OPERATION` with one UTF-8 JSON request on stdin:
 
 ```json
 {"contract_version":"pimcamp.v1","client_credential":"<supplied privately>","input":{}}
@@ -89,3 +89,116 @@ which may differ from the provider's literal INBOX.
 For an authorized integration test, subscribe before the stimulus, retain its
 mutation ID, correlate the resulting message, and report submission, event,
 and retrieval separately. Never send an unsolicited test just to check access.
+
+## Private message-view/reply links (v2)
+
+Use this same path whenever an email needs a link in a report, search result,
+chat, or other output. It requires a deployment providing the additive
+`pimcamp.v2` operations, an existing client credential granted those operations
+and the selected account, and a configured private mail origin. Installation
+alone does not establish availability. Keep the v1 requests above on
+`pimcamp.v1`; these link operations use `pimcamp.v2` on the same JSON/stdio
+executable. The credential-handling rules above apply unchanged.
+
+| Invocation | `input` | Result |
+| --- | --- | --- |
+| `pimcamp accounts` | `{}` | `accounts`, each with `account_id` and `label`, limited to this client's configured authorized accounts. |
+| `pimcamp list_account` | `account_id`, `limit` (1–100), optional nonempty `cursor` | `account_id`, `messages` with opaque `source_ref` and summary fields, and `next_cursor`. |
+| `pimcamp issue_link` | `account_id`, `source_ref` | `status: linked` with `account_id`, `locator`, `url`, or `status: cannot_link` with `reason` and no URL. |
+
+Send one JSON request on stdin per invocation. These are request templates;
+replace the placeholders with privately supplied credentials and actual returned
+values, not literal example identifiers:
+
+For `pimcamp accounts`:
+
+```json
+{"contract_version":"pimcamp.v2","client_credential":"<supplied privately>","input":{}}
+```
+
+For `pimcamp list_account`:
+
+```json
+{"contract_version":"pimcamp.v2","client_credential":"<supplied privately>","input":{"account_id":"<selected authorized account_id>","limit":20}}
+```
+
+For `pimcamp issue_link`:
+
+```json
+{"contract_version":"pimcamp.v2","client_credential":"<supplied privately>","input":{"account_id":"<same account_id>","source_ref":"<returned source_ref for this message>"}}
+```
+
+Select the owning account explicitly from the authorized account inventory,
+using the task and authoritative source context. Do not choose the first account,
+infer ownership from a sender/recipient address, or fall back to the runtime
+default. If ownership is unclear, resolve it before requesting a link. Preserve
+that account alongside each message's returned `source_ref`; check the listing's
+returned account matches the selection. Follow `next_cursor` with the same
+account and page size when more results are needed, omitting `cursor` on the
+first request and stopping at null. A bounded scan is not a complete search.
+
+`list_account` lists the selected account's configured collection; it does not
+add arbitrary-folder selection or a search-query input. Carry its actual
+`source_ref` through report/search processing. A v1 `message_ref`, lower-tool
+ID, folder UID, RFC Message-ID, subject/date match, or thread link is not a
+`source_ref`. This interface has no public source-import operation. If an
+external search result lacks authoritative v2 identity, report that it cannot
+be linked through this interface; do not guess a matching source reference.
+Even a returned `source_ref` is only a candidate: `issue_link` validates its
+account, adapter context and resolvable continuity evidence before persisting
+a locator. Listing success alone does not prove linkability or move support.
+
+Check the process exit status and response envelope (`contract_version` must
+be `pimcamp.v2`) before inspecting `result`. A successful linked response has
+this shape; these placeholders are illustrative, not usable link values:
+
+```json
+{"contract_version":"pimcamp.v2","result":{"status":"linked","account_id":"<same account_id>","locator":"<opaque locator>","url":"<complete returned private URL>"}}
+```
+
+Only render a link when `result.status` is `linked`, its account matches the
+selected source account, and a nonempty `url` is present. Use the returned URL
+unchanged as the target of an “Open message and reply” link next to that email
+in either a report or search result; chat and other output use the same result.
+Keep the account context visible where needed to distinguish messages. Do not
+construct a URL from `locator`, add a reply path, change the origin, or substitute
+a thread URL or `mailto:` link. The one returned URL opens the message reader
+with its reply composer.
+
+A refusal to link is a normal exit-0 result, for example:
+
+```json
+{"contract_version":"pimcamp.v2","result":{"status":"cannot_link","reason":"identity_evidence_missing"}}
+```
+
+Render no URL for `cannot_link`. Explain the limitation next to the email,
+for example “Private link unavailable: Pimcamp lacks authoritative stable
+identity for this message.” Preserve the returned reason when useful:
+
+- `source_not_authoritative`, `account_mismatch`, `source_context_changed`:
+  the reference is unknown, belongs to another account, or its adapter context
+  changed. Obtain fresh authoritative context without switching accounts.
+- `identity_evidence_missing`, `identity_capability_unproven`,
+  `identity_capability_mismatch`, `identity_resolution_unsupported`: the backend
+  cannot establish the required stable identity/continuity capability.
+- `ambiguous_identity`, `identity_not_found`, `identity_not_resolvable`: the
+  backend cannot resolve exactly one source. Do not pick another message.
+- `mail_origin_unconfigured`: the deployment has no configured viewer origin.
+  Report the missing capability; link generation does not authorize configuring it.
+
+Exit-1 errors instead carry `code`, `message`, and `retryable` in the envelope,
+without a usable result. Treat authorization denial, service failure, malformed
+responses, unknown statuses, or mismatched accounts as no-link outcomes. Report
+what failed; do not turn them into guessed URLs, access changes, or claims that
+mail is missing. Retry only recoverable reads/link requests within existing
+permission, retaining the intended account and source.
+
+Issuing a link stores source/locator state but does not send or file mail.
+The URL is not an access credential: the browser still requires authenticated,
+authorized access to that account. Keep credentials and unnecessary mail content
+out of URLs, logs and diagnostic output. A link/report/search request authorizes
+neither new access nor sending or filing. Opening, refreshing, and preparing a
+browser reply do not send; the human reviews source account, From, recipients,
+subject and body and explicitly uses Send. An uncertain send requires receipt
+reconciliation, never a blind retry. Existing separately authorized v1 sending
+and junk behavior above is unchanged.

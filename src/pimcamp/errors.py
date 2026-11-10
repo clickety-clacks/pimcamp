@@ -31,9 +31,9 @@ class PimcampError(Exception):
     def retryable(self) -> bool:
         return self.code == "backend_unavailable"
 
-    def public_value(self) -> dict[str, object]:
+    def public_value(self, contract_version: str = CONTRACT_VERSION) -> dict[str, object]:
         return {
-            "contract_version": CONTRACT_VERSION,
+            "contract_version": contract_version,
             "code": self.code,
             "retryable": self.retryable,
             "message": self.message,
@@ -46,3 +46,10 @@ def invalid(message: str = "The request does not match the selected operation.")
 
 def unavailable(message: str = "The configured mail adapter is unavailable.") -> PimcampError:
     return PimcampError("backend_unavailable", message)
+
+
+class NotSubmittedError(PimcampError):
+    """A mutation adapter proves that its transport submission did not begin."""
+
+    def __init__(self, message: str = "The mail mutation did not begin."):
+        super().__init__("backend_unavailable", message)

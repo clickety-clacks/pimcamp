@@ -21,7 +21,7 @@ from typing import Any
 
 from .config import HimalayaConfig
 from .diagnostics import emit
-from .errors import PimcampError, unavailable
+from .errors import NotSubmittedError, PimcampError, unavailable
 from .jsonio import loads_one
 
 
@@ -136,8 +136,9 @@ class HimalayaOperationsAdapter:
 
     def _send(self, payload: dict[str, Any], deadline: float) -> dict[str, str]:
         composition = payload["composition"]
+        sender = payload.get("sender", self.config.sender)
         try:
-            raw = self._message(composition, payload["threading"])
+            raw = self._message(composition, payload["threading"], sender)
         except PimcampError:
             raise
         except Exception as exc:
@@ -147,10 +148,16 @@ class HimalayaOperationsAdapter:
             for field in ("to", "cc", "bcc")
             for item in composition[field]
         ]
-        args = ["smtp", "send", "--mail-from", self.config.sender["address"]]
+        args = ["smtp", "send", "--mail-from", sender["address"]]
         for recipient in recipients:
             args.extend(("--rcpt-to", recipient))
-        output = self._run_json(args, raw, deadline, mutation=True)
+        output = self._run_json(
+            args,
+            raw,
+            deadline,
+            mutation=True,
+            pre_submission_retry_safe=payload.get("_pimcamp_browser_reply") is True,
+        )
         if output != {"message": "Message successfully sent"}:
             raise PimcampError("outcome_unknown", "The Himalaya send outcome is unknown.")
         return {"status": "sent"}
@@ -178,10 +185,13 @@ class HimalayaOperationsAdapter:
         return {"filed": output == {"message": "1 message successfully moved"}}
 
     def _message(
-        self, composition: dict[str, Any], threading_context: dict[str, Any] | None
+        self,
+        composition: dict[str, Any],
+        threading_context: dict[str, Any] | None,
+        sender: dict[str, str | None] | None = None,
     ) -> bytes:
         message = EmailMessage(policy=policy.SMTP)
-        sender = self.config.sender
+        sender = sender or self.config.sender
         message["From"] = str(
             Address(display_name=sender["name"] or "", addr_spec=sender["address"])
         )
@@ -220,11 +230,14 @@ class HimalayaOperationsAdapter:
         *,
         mutation: bool = False,
         missing_is_not_found: bool = False,
+        pre_submission_retry_safe: bool = False,
     ) -> Any:
         command = self._base_command() + args
         try:
             timeout = _remaining(deadline)
         except PimcampError as exc:
+            if pre_submission_retry_safe:
+                raise NotSubmittedError("Himalaya did not start the reply submission.") from exc
             raise _after_attempt(mutation, "Himalaya exceeded its wait bound.") from exc
         try:
             process = subprocess.Popen(
@@ -235,7 +248,7 @@ class HimalayaOperationsAdapter:
                 start_new_session=True,
             )
         except OSError as exc:
-            raise unavailable("Himalaya could not start.") from exc
+            raise NotSubmittedError("Himalaya could not start.") from exc
         try:
             stdout, _ = process.communicate(input_bytes, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
