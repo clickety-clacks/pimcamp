@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import unittest
 
 from tests.support.live_evidence import (
@@ -15,10 +16,62 @@ from tests.support.live_evidence import (
     observed_version,
     redact_command,
     redact_lower_output,
+    validate_enter_elapsed,
+)
+from tests.support.live_timing import (
+    ENTER_CLOCK_FD_ENV,
+    JourneyWindow,
+    read_enter_timestamp,
 )
 
 
 class LiveEvidenceTests(unittest.TestCase):
+    def test_synthetic_enter_elapsed_requires_final_list_within_600_seconds(
+        self,
+    ) -> None:
+        synthetic = [
+            {
+                "kind": "journey_complete",
+                "elapsed_anchor": "single_enter",
+                "elapsed_seconds_from_enter": 599.75,
+                "final_list_assertion": True,
+                "journey_window_seconds": 600,
+            }
+        ]
+
+        summary = validate_enter_elapsed(synthetic)
+
+        self.assertEqual("single_enter", summary["elapsed_anchor"])
+        self.assertEqual(599.75, summary["elapsed_seconds_from_enter"])
+        self.assertTrue(summary["final_list_assertion"])
+        self.assertEqual(600, summary["journey_window_seconds"])
+        for changes in (
+            {"elapsed_anchor": "runner_start"},
+            {"elapsed_seconds_from_enter": 600.01},
+            {"final_list_assertion": False},
+            {"journey_window_seconds": 120},
+        ):
+            invalid = [{**synthetic[0], **changes}]
+            with self.subTest(changes=changes), self.assertRaises(AssertionError):
+                validate_enter_elapsed(invalid)
+
+    def test_synthetic_clock_pipe_preserves_the_enter_anchor_after_delay(self) -> None:
+        entered_at = time.monotonic() - 5.5
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, f"{entered_at:.9f}\n".encode("ascii"))
+        finally:
+            os.close(write_fd)
+        environment = {ENTER_CLOCK_FD_ENV: str(read_fd)}
+
+        received = read_enter_timestamp(environment)
+        window = JourneyWindow(received, 600)
+
+        self.assertAlmostEqual(entered_at, received, places=8)
+        self.assertGreater(window.elapsed(), 5)
+        self.assertAlmostEqual(600 - window.elapsed(), window.remaining(), places=4)
+        self.assertNotIn(ENTER_CLOCK_FD_ENV, environment)
+
     def test_human_return_requires_one_sender_from_distinct_recipient(self) -> None:
         selected = "selected@example.test"
         recipient = "recipient@example.test"

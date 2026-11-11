@@ -10,17 +10,37 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tests.test_live_adapters import (
-    EXECUTABLE,
-    RealAdapterJourney,
-    _prompt_for_client_credential,
-)
+from tests import test_live_adapters as live_adapters
 
 
 CLIENT_SECRET = "synthetic-live-client-secret-sentinel"
 
 
 class LiveAdapterRunnerTests(unittest.TestCase):
+    def test_ordinary_reply_uses_token_substrings_in_re_subject_and_body(self) -> None:
+        token = "pimcamp-live-synthetic-token"
+
+        self.assertTrue(
+            live_adapters._human_return_subject_matches(f"Re: {token} (reply)", token)
+        )
+        self.assertFalse(live_adapters._human_return_subject_matches(token, token))
+        self.assertFalse(
+            live_adapters._human_return_subject_matches(f"Fwd: {token}", token)
+        )
+        self.assertTrue(
+            live_adapters._body_contains_token(
+                [
+                    {
+                        "content_utf8": (
+                            "On a previous message, someone wrote:\n> " + token
+                        )
+                    }
+                ],
+                token,
+            )
+        )
+        self.assertFalse(live_adapters._body_contains_token([], token))
+
     def test_prompt_scrubs_obsolete_environment_and_does_not_log_input(self) -> None:
         output = io.StringIO()
         errors = io.StringIO()
@@ -31,7 +51,7 @@ class LiveAdapterRunnerTests(unittest.TestCase):
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(
                     errors
                 ):
-                    credential = _prompt_for_client_credential()
+                    credential = live_adapters._prompt_for_client_credential()
             self.assertTrue(
                 credential == CLIENT_SECRET,
                 "hidden prompt did not return its supplied test value",
@@ -48,7 +68,7 @@ class LiveAdapterRunnerTests(unittest.TestCase):
                 "getpass.getpass"
             ) as prompt:
                 with self.assertRaises(unittest.SkipTest):
-                    _prompt_for_client_credential()
+                    live_adapters._prompt_for_client_credential()
             prompt.assert_not_called()
             self.assertNotIn("PIMCAMP_LIVE_CREDENTIAL", os.environ)
 
@@ -58,11 +78,11 @@ class LiveAdapterRunnerTests(unittest.TestCase):
             side_effect=getpass.GetPassWarning("hidden input is unavailable"),
         ) as prompt:
             with self.assertRaises(unittest.SkipTest):
-                _prompt_for_client_credential()
+                live_adapters._prompt_for_client_credential()
         prompt.assert_called_once_with("Pimcamp live-test client credential: ")
 
     def test_request_keeps_credential_on_stdin_and_out_of_failure_output(self) -> None:
-        journey = RealAdapterJourney()
+        journey = live_adapters.RealAdapterJourney()
         journey.credential = CLIENT_SECRET
         journey.environment = {
             "PIMCAMP_CONFIG": "/tmp/private-test-config.json",
@@ -72,7 +92,7 @@ class LiveAdapterRunnerTests(unittest.TestCase):
             {"contract_version": "pimcamp.v1", "result": {"code": "failed"}}
         )
         completed = subprocess.CompletedProcess(
-            args=[str(EXECUTABLE), "list"],
+            args=[str(live_adapters.EXECUTABLE), "list"],
             returncode=1,
             stdout=response,
             stderr=CLIENT_SECRET,
@@ -95,11 +115,11 @@ class LiveAdapterRunnerTests(unittest.TestCase):
         )
 
     def test_timeout_output_is_suppressed(self) -> None:
-        journey = RealAdapterJourney()
+        journey = live_adapters.RealAdapterJourney()
         journey.credential = CLIENT_SECRET
         journey.environment = {"PIMCAMP_CONFIG": "/tmp/private-test-config.json"}
         timeout = subprocess.TimeoutExpired(
-            cmd=[str(EXECUTABLE), "list"],
+            cmd=[str(live_adapters.EXECUTABLE), "list"],
             timeout=1,
             output=CLIENT_SECRET,
             stderr=CLIENT_SECRET,
@@ -110,6 +130,26 @@ class LiveAdapterRunnerTests(unittest.TestCase):
         self.assertFalse(
             CLIENT_SECRET in str(failure.exception), "credential appeared in timeout output"
         )
+
+    def test_operation_timeout_is_capped_at_remaining_journey_time(self) -> None:
+        journey = live_adapters.RealAdapterJourney()
+        journey.credential = CLIENT_SECRET
+        journey.environment = {"PIMCAMP_CONFIG": "/tmp/private-test-config.json"}
+        completed = subprocess.CompletedProcess(
+            args=[str(live_adapters.EXECUTABLE), "list"],
+            returncode=0,
+            stdout=json.dumps(
+                {"contract_version": "pimcamp.v1", "result": {"messages": []}}
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "tests.test_live_adapters.time.monotonic", return_value=99.25
+        ), patch("subprocess.run", return_value=completed) as run:
+            journey._invoke("list", {"limit": 1}, deadline=100.0)
+
+        self.assertEqual(0.75, run.call_args.kwargs["timeout"])
 
 
 if __name__ == "__main__":
