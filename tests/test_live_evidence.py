@@ -59,7 +59,7 @@ class LiveEvidenceTests(unittest.TestCase):
         entered_at = time.monotonic() - 5.5
         read_fd, write_fd = os.pipe()
         try:
-            os.write(write_fd, f"{entered_at:.9f}\n".encode("ascii"))
+            os.write(write_fd, f"{entered_at!r}\n".encode("ascii"))
         finally:
             os.close(write_fd)
         environment = {ENTER_CLOCK_FD_ENV: str(read_fd)}
@@ -67,7 +67,7 @@ class LiveEvidenceTests(unittest.TestCase):
         received = read_enter_timestamp(environment)
         window = JourneyWindow(received, 600)
 
-        self.assertAlmostEqual(entered_at, received, places=8)
+        self.assertEqual(entered_at, received)
         self.assertGreater(window.elapsed(), 5)
         self.assertAlmostEqual(600 - window.elapsed(), window.remaining(), places=4)
         self.assertNotIn(ENTER_CLOCK_FD_ENV, environment)
