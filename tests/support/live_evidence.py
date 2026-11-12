@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -83,6 +84,7 @@ _VERSION_TOKEN = re.compile(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_HUMAN_RETURN_WINDOW_SECONDS = 600
 
 
 def _canonical(value: Any) -> bytes:
@@ -184,6 +186,7 @@ class EvidenceRecorder:
             (item for item in records if item.get("kind") == "journey_metadata"),
             {},
         )
+        timing_summary: dict[str, Any] = {}
         if outcome == "passed":
             if (
                 metadata.get("schema") != "pimcamp.live-evidence.v1"
@@ -235,6 +238,15 @@ class EvidenceRecorder:
                     "human-return provenance evidence is incomplete (output suppressed)"
                 )
             if metadata.get("human_return_mode"):
+                if (
+                    metadata.get("journey_clock_anchor") != "single_enter"
+                    or metadata.get("journey_window_seconds")
+                    != _HUMAN_RETURN_WINDOW_SECONDS
+                ):
+                    raise AssertionError(
+                        "human-return metadata omitted its Enter-started window (output suppressed)"
+                    )
+                timing_summary = validate_enter_elapsed(records)
                 provenance = next(
                     (
                         item
@@ -389,6 +401,7 @@ class EvidenceRecorder:
                     "lower_adapter_call_start",
                     "lower_adapter_output_line",
                     "lower_adapter_capture",
+                    "journey_complete",
                 }
             ],
             "client_call_order": [str(item.get("operation")) for item in client_calls],
@@ -408,9 +421,45 @@ class EvidenceRecorder:
             "capture_sha256": [str(item["capture_sha256"]) for item in captures],
             "checks": checks,
             "junk_mechanism": junk_mechanism,
+            **timing_summary,
         }
         self.record(**summary)
         return summary
+
+
+def validate_enter_elapsed(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate the synthetic or observed final assertion against the Enter clock."""
+    completions = [
+        item for item in records if item.get("kind") == "journey_complete"
+    ]
+    if len(completions) != 1:
+        raise AssertionError(
+            "human-return evidence omitted a unique final assertion time "
+            "(output suppressed)"
+        )
+    completion = completions[0]
+    elapsed = completion.get("elapsed_seconds_from_enter")
+    window = completion.get("journey_window_seconds")
+    if (
+        completion.get("elapsed_anchor") != "single_enter"
+        or completion.get("final_list_assertion") is not True
+        or completion.get("journey_window_seconds") != _HUMAN_RETURN_WINDOW_SECONDS
+        or isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(elapsed)
+        or elapsed < 0
+        or elapsed > _HUMAN_RETURN_WINDOW_SECONDS
+    ):
+        raise AssertionError(
+            "human-return elapsed time did not satisfy the Enter-started "
+            "window (output suppressed)"
+        )
+    return {
+        "elapsed_anchor": "single_enter",
+        "elapsed_seconds_from_enter": elapsed,
+        "final_list_assertion": True,
+        "journey_window_seconds": window,
+    }
 
 
 def redact_command(command: list[str] | tuple[str, ...], adapter: str) -> list[str]:

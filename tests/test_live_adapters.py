@@ -29,11 +29,17 @@ from tests.support.live_evidence import (
     human_return_provenance_matches,
     observed_version,
 )
+from tests.support.live_timing import (
+    ENTER_CLOCK_FD_ENV,
+    JourneyWindow,
+    read_enter_timestamp,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTABLE = ROOT / "pimcamp"
 EXTERNAL_BOUND_SECONDS = 120
+HUMAN_RETURN_BOUND_SECONDS = 600
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -62,6 +68,23 @@ def _prompt_for_client_credential() -> str:
     return credential
 
 
+def _human_return_subject_matches(subject: object, token: str) -> bool:
+    return (
+        isinstance(subject, str)
+        and subject.casefold().startswith("re:")
+        and token in subject
+    )
+
+
+def _body_contains_token(body_parts: object, token: str) -> bool:
+    return isinstance(body_parts, list) and any(
+        isinstance(part, dict)
+        and isinstance(part.get("content_utf8"), str)
+        and token in part["content_utf8"]
+        for part in body_parts
+    )
+
+
 class RealAdapterJourney(unittest.TestCase):
     def test_real_single_account_journey(self) -> None:
         # Do not let a legacy secret variable reach version probes or child tools.
@@ -88,6 +111,11 @@ class RealAdapterJourney(unittest.TestCase):
             self.skipTest(
                 "real Himalaya/Mirador journey not enabled; missing "
                 f"{detail}; no lower-adapter fixture is substituted"
+            )
+
+        if self.human_return_mode and not os.environ.get(ENTER_CLOCK_FD_ENV):
+            self.skipTest(
+                "human-return mode needs the wrapper's single-Enter clock anchor"
             )
 
         config_path = Path(str(required["PIMCAMP_LIVE_CONFIG"]))
@@ -143,6 +171,17 @@ class RealAdapterJourney(unittest.TestCase):
         self.teardown_timeout = float(wait_bound) + 5
 
         self.credential = _prompt_for_client_credential()
+        if self.human_return_mode:
+            enter_timestamp = read_enter_timestamp()
+            self.journey_window = JourneyWindow(
+                started_at=enter_timestamp,
+                duration_seconds=HUMAN_RETURN_BOUND_SECONDS,
+            )
+        else:
+            self.journey_window = JourneyWindow(
+                started_at=time.monotonic(),
+                duration_seconds=EXTERNAL_BOUND_SECONDS,
+            )
         try:
             self.evidence = EvidenceRecorder.create(str(required[EVIDENCE_ENV]), ROOT)
         except (OSError, ValueError):
@@ -162,6 +201,10 @@ class RealAdapterJourney(unittest.TestCase):
             source_commit=self.source_commit,
             integration_ref="origin/main",
             human_return_mode=self.human_return_mode,
+            journey_clock_anchor=(
+                "single_enter" if self.human_return_mode else "runner_start"
+            ),
+            journey_window_seconds=self.journey_window.duration_seconds,
             python_implementation=platform.python_implementation(),
             python_version=platform.python_version(),
             sqlite_version=sqlite3.sqlite_version,
@@ -182,11 +225,16 @@ class RealAdapterJourney(unittest.TestCase):
         self.message_filed = False
         self.subject_absent_after_filing = False
         self.subscription_teardown = False
-        deadline = time.monotonic() + EXTERNAL_BOUND_SECONDS
+        deadline = self.journey_window.deadline
         subscription: subprocess.Popen[str] | None = None
         body_passed = False
 
         try:
+            self.assertGreater(
+                deadline - time.monotonic(),
+                0,
+                "real journey exceeded its external bound before subscription",
+            )
             subscription = self._start_subscription()
             started = self._read_line(subscription, deadline)
             self.assertEqual(
@@ -239,8 +287,8 @@ class RealAdapterJourney(unittest.TestCase):
                     "read", {"message_ref": incoming["message_ref"]}, deadline
                 )
             )
-            self.return_body_token_matched = any(
-                token in part["content_utf8"] for part in message["body_parts"]
+            self.return_body_token_matched = _body_contains_token(
+                message.get("body_parts"), token
             )
             self.assertTrue(self.return_body_token_matched)
             if self.human_return_mode:
@@ -329,6 +377,21 @@ class RealAdapterJourney(unittest.TestCase):
             remaining = self._all_summaries(deadline)
             self.assertFalse(any(token in item["subject"] for item in remaining))
             self.subject_absent_after_filing = True
+            if self.human_return_mode:
+                assert self.evidence is not None
+                elapsed = self.journey_window.elapsed()
+                self.assertLessEqual(
+                    elapsed,
+                    self.journey_window.duration_seconds,
+                    "real journey exceeded its Enter-started window",
+                )
+                self.evidence.record(
+                    "journey_complete",
+                    elapsed_anchor="single_enter",
+                    elapsed_seconds_from_enter=elapsed,
+                    final_list_assertion=True,
+                    journey_window_seconds=self.journey_window.duration_seconds,
+                )
             body_passed = True
         finally:
             cleanup_passed = False
@@ -540,7 +603,17 @@ class RealAdapterJourney(unittest.TestCase):
         while time.monotonic() < deadline:
             summaries = self._all_summaries(deadline)
             found = next(
-                (item for item in summaries if token in item["subject"]), None
+                (
+                    item
+                    for item in summaries
+                    if (
+                        _human_return_subject_matches(item.get("subject"), token)
+                        if self.human_return_mode
+                        else isinstance(item.get("subject"), str)
+                        and token in item["subject"]
+                    )
+                ),
+                None,
             )
             if found is not None:
                 return found
@@ -582,6 +655,7 @@ class RealAdapterJourney(unittest.TestCase):
             "PIMCAMP_LIVE_HIMALAYA_VERSION",
             "PIMCAMP_LIVE_MIRADOR_VERSION",
             "PIMCAMP_LIVE_HUMAN_RETURN",
+            ENTER_CLOCK_FD_ENV,
         ):
             environment.pop(name, None)
         evidence = getattr(self, "evidence", None)
