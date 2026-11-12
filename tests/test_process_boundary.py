@@ -23,6 +23,7 @@ ALL_GRANTS = ["list", "read", "compose", "reply", "send", "junk", "subscribe_new
 
 
 class BoundaryCase(unittest.TestCase):
+    executable = EXECUTABLE
     operations_adapter = PORT_ADAPTER
     observation_adapter = OBSERVATION_ADAPTER
 
@@ -108,7 +109,7 @@ class BoundaryCase(unittest.TestCase):
         environment = os.environ.copy()
         environment["PIMCAMP_CONFIG"] = str(self.config_path)
         return subprocess.run(
-            [str(EXECUTABLE), operation],
+            [str(self.executable), operation],
             input=raw,
             text=True,
             stdout=subprocess.PIPE,
@@ -448,6 +449,8 @@ class BoundaryCase(unittest.TestCase):
         self.assertEqual(2, len(self.calls_for("move_to_junk")))
 
     def test_hung_mutation_becomes_unknown_and_cannot_retry(self) -> None:
+        # Start the short response clock only after the fixture records send.
+        self.executable = ROOT / "tests" / "support" / "ready_timeout_cli.py"
         self.write_config(ALL_GRANTS, wait_seconds=0.15)
         self.update_adapter_state(behavior={"send": "hang"})
         input_value = send_input("550e8400-e29b-41d4-a716-446655440030")
